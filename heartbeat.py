@@ -1692,6 +1692,52 @@ class Crawler:
             if self._same_host(url) and url not in self.visited:
                 self._q.put((url, 1))
 
+    def _ai_check_403_child(self, parent_path: str, child_url: str, resp: dict) -> bool:
+        """
+        403→200 topilganda AI ga response'ni ko'rsatadi.
+        AI static file (CSS/JS/image), login page, xato sahifa ekanligini aniqlaydi.
+        Faqat haqiqiy BAC bo'lsa True qaytaradi va acl_bypass_findings ga qo'shadi.
+        """
+        ai_result = self.ai.analyze_403_response(
+            parent_url=parent_path,
+            child_url=child_url,
+            child_status=resp["status"],
+            child_body=resp["body"],
+            child_headers=resp.get("headers", {}),
+            context="forbidden_child_probe",
+        )
+
+        verdict     = ai_result.get("verdict", "unknown")
+        is_real_bac = ai_result.get("is_real_bac", False)
+        confidence  = ai_result.get("confidence", 0)
+        what_i_see  = ai_result.get("what_i_see", "")
+        reason      = ai_result.get("reason", "")
+        ct_detected = ai_result.get("content_type_detected", "unknown")
+
+        if is_real_bac and confidence >= MIN_CONFIDENCE:
+            console.print(
+                f"  [bold red]🚨 AI-confirmed BAC: {child_url}[/bold red]\n"
+                f"  [red]     Verdict: {verdict} | {what_i_see}[/red]\n"
+                f"  [red]     Reason:  {reason}[/red]"
+            )
+            self.acl_bypass_findings.append({
+                "parent_403":   parent_path,
+                "child_200":    child_url,
+                "body_size":    len(resp["body"]),
+                "body_snippet": resp["body"][:400],
+                "ai_reason":    reason,
+                "confidence":   confidence,
+                "ai_verdict":   verdict,
+                "ai_what":      what_i_see,
+            })
+            return True
+        else:
+            console.print(
+                f"  [dim yellow]  ✗ NOT BAC: {child_url} — "
+                f"{verdict} ({ct_detected}) | {reason[:80]}[/dim yellow]"
+            )
+            return False
+
     def _probe_forbidden_children(self):
         if not self.forbidden_paths:
             return
@@ -1716,43 +1762,44 @@ class Crawler:
         ]
         base = self.base.rstrip("/")
         for fpath in list(self.forbidden_paths):
+            parent_path = base + fpath
             for suffix in suffixes:
-                url = base + fpath + suffix
+                url = parent_path + suffix
                 if url in self.visited:
                     continue
                 r = self.client.get(url)
                 with self._lock:
                     self.visited.add(url)
                 if r["status"] in (200, 201, 202):
-                    ep = self._url_to_endpoint(url, "GET", 0, "forbidden_child")
-                    ep.score = 90
-                    with self._lock:
-                        self.endpoints.append(ep)
-                    console.print(f"  [bold red]🚨 403→200 {url}[/bold red]")
-                    self.acl_bypass_findings.append({
-                        "parent_403": base + fpath,
-                        "child_200": url,
-                        "body_size": len(r["body"]),
-                        "body_snippet": r["body"][:300],
-                    })
-                    for nsuffix in nested_suffixes:
-                        nurl = url.rstrip("/") + nsuffix
-                        if nurl in self.visited:
-                            continue
-                        nr = self.client.get(nurl)
+                    # AI har bir 403→200 response'ni ko'radi va tahlil qiladi
+                    is_real = self._ai_check_403_child(parent_path, url, r)
+                    if is_real:
+                        ep = self._url_to_endpoint(url, "GET", 0, "forbidden_child")
+                        ep.score = 90
                         with self._lock:
-                            self.visited.add(nurl)
-                        if nr["status"] in (200, 201, 202):
-                            nep = self._url_to_endpoint(nurl, "GET", 0, "forbidden_child_deep")
-                            nep.score = 95
+                            self.endpoints.append(ep)
+                        # Nested scan faqat real BAC bo'lsa
+                        for nsuffix in nested_suffixes:
+                            nurl = url.rstrip("/") + nsuffix
+                            if nurl in self.visited:
+                                continue
+                            nr = self.client.get(nurl)
                             with self._lock:
-                                self.endpoints.append(nep)
-                            self.acl_bypass_findings.append({
-                                "parent_403": base + fpath,
-                                "child_200": nurl,
-                                "body_size": len(nr["body"]),
-                                "body_snippet": nr["body"][:300],
-                            })
+                                self.visited.add(nurl)
+                            if nr["status"] in (200, 201, 202):
+                                nis_real = self._ai_check_403_child(parent_path, nurl, nr)
+                                if nis_real:
+                                    nep = self._url_to_endpoint(nurl, "GET", 0, "forbidden_child_deep")
+                                    nep.score = 95
+                                    with self._lock:
+                                        self.endpoints.append(nep)
+                    else:
+                        # Static file bo'lsa ham endpoint sifatida qo'shish
+                        # (lekin BAC finding EMAS)
+                        ep = self._url_to_endpoint(url, "GET", 0, "forbidden_child_static")
+                        ep.score = 5  # past prioritet
+                        with self._lock:
+                            self.endpoints.append(ep)
                 elif r["status"] == 403:
                     child_path = urllib.parse.urlparse(url).path
                     with self._lock:
@@ -2917,12 +2964,22 @@ Return JSON array: [{{"owasp_id":"A01","title":"...","risk":"High","confidence":
             return result["findings"]
         return []
 
-    def verify_child_access(self, parent_url: str, child_url: str,
-                            child_status: int, child_body: str,
-                            child_headers: dict, parent_signal: str) -> dict:
+    def analyze_403_response(self, parent_url: str, child_url: str,
+                             child_status: int, child_body: str,
+                             child_headers: dict, context: str = "") -> dict:
         """
-        AI child URL haqiqatan BAC mi yoki login redirect mi ekanini aniqlaydi.
-        Nima ko'rdi, nima qaror qildi — barchasini tushuntiradi.
+        AI 403→200 bo'lgan istalgan response'ni to'liq tahlil qiladi.
+        Static file (CSS/JS/image/font), login redirect, xato sahifa,
+        yoki haqiqiy BAC ekanligini FAQAT AI o'zi aniqlaydi.
+
+        AI response body'ning birinchi 150 qatorini ko'radi — bu yetarli:
+        - CSS faylmi? → body'da selector/property (.class { color: red })
+        - JS faylmi? → body'da function/var/import
+        - Image/font? → Content-Type header'dan
+        - Login sahifami? → form, input password
+        - Haqiqiy ma'lumotmi? → admin panel, user data, config
+
+        AI o'zi qaror qiladi, hech qanday hardcoded filter yo'q.
         """
         title_m    = re.search(r'<title[^>]*>(.*?)</title>', child_body, re.I | re.S)
         page_title = title_m.group(1).strip()[:80] if title_m else ""
@@ -2930,46 +2987,85 @@ Return JSON array: [{{"owasp_id":"A01","title":"...","risk":"High","confidence":
         loc_hdr    = child_headers.get("location",     child_headers.get("Location", ""))
         server_hdr = child_headers.get("server",       child_headers.get("Server", ""))
 
-        prompt = f"""You are a penetration tester verifying a potential Broken Access Control (BAC).
+        # Body'dan faqat birinchi 150 qatorni olish (7000 qatorlik CSS kerak emas)
+        body_lines = child_body.split("\n")
+        body_preview = "\n".join(body_lines[:150])
+        if len(body_lines) > 150:
+            body_preview += f"\n... [{len(body_lines) - 150} more lines truncated]"
+
+        # URL'dan fayl kengaytmasini olish (AI ga kontekst uchun)
+        parsed_path = urllib.parse.urlparse(child_url).path
+        file_ext = ""
+        if "." in parsed_path.split("/")[-1]:
+            file_ext = parsed_path.split("/")[-1].rsplit(".", 1)[-1].lower()
+
+        prompt = f"""You are an expert penetration tester. A parent URL returned HTTP 403 (forbidden),
+but a child URL under it returned HTTP {child_status} (accessible). Your job is to deeply
+analyze the child response and determine what this content actually is.
 
 CONTEXT:
-  Parent URL (was restricted): {parent_url}
-  Restriction signal on parent: "{parent_signal}"
-  Child URL now being tested: {child_url}
-  Child HTTP status code: {child_status}
+  Parent URL (restricted):  {parent_url}
+  Child URL (accessible):   {child_url}
+  File extension in URL:    "{file_ext}" (may be empty)
+  Context:                  {context}
 
-CHILD RESPONSE:
-  Page title:    "{page_title}"
-  Content-Type:  {ct_hdr}
-  Server:        {server_hdr}
-  Location hdr:  {loc_hdr}
-  Body size:     {len(child_body)} bytes
-  Body (first 1500 chars):
+CHILD RESPONSE METADATA:
+  HTTP Status:     {child_status}
+  Content-Type:    {ct_hdr}
+  Server:          {server_hdr}
+  Location header: {loc_hdr}
+  Page title:      "{page_title}"
+  Total body size: {len(child_body)} bytes ({len(body_lines)} lines)
+
+CHILD RESPONSE BODY (first 150 lines — analyze the code/content structure):
 ---
-{child_body[:1500]}
+{body_preview}
 ---
 
-DECISION RULES (apply strictly):
-1. If body has login form (username+password fields) or title contains "Login/Sign in/Auth"
-   → verdict=login_redirect, is_real_bac=false
-2. If body size < 200 bytes with no real content
-   → verdict=empty_page, is_real_bac=false
-3. If body is a generic error / 404 / maintenance page
-   → verdict=error_page, is_real_bac=false
-4. If body contains actual protected data (user records, admin panel UI, config values,
-   dashboard with real data, API keys, personal info)
-   → verdict=real_bac, is_real_bac=true
-5. A page that just redirects or shows the login form IS NOT a BAC,
-   even if HTTP status was 200.
+ANALYZE the body content carefully. Look at the actual code structure:
+- CSS files have selectors, properties, @media, @import, .class {{ }}, #id {{ }}
+- JavaScript files have function, var, let, const, import, export, =>, class
+- Images/fonts are binary (garbled text or very short)
+- HTML pages have <html>, <head>, <body>, <div> tags
+- JSON API responses have {{"key": "value"}} structure
+- Config files have KEY=VALUE or YAML/XML structure
 
-Respond ONLY in JSON (no markdown):
+DECISION CATEGORIES:
+1. "static_asset" — CSS, JS, images, fonts, icons, source maps, SVG
+   These are PUBLIC static files. Access to them is NOT a security vulnerability.
+   Even under /admin/style.css — CSS is meant to be cached and served publicly.
+
+2. "login_redirect" — Login form, auth page, "please sign in" content
+   The server shows a login page instead of real content. NOT a BAC.
+
+3. "error_page" — 404 custom page, error message, maintenance page, blank/empty
+   Generic error or placeholder. NOT a BAC.
+
+4. "public_content" — Public marketing page, documentation, help text
+   Publicly intended content that happens to be under a restricted path. NOT a BAC.
+
+5. "real_bac" — ACTUAL protected data: admin panel UI with real controls,
+   user records/PII, configuration values, API keys, database contents,
+   internal dashboards with real data, file manager, server status with internals.
+   THIS IS a real Broken Access Control vulnerability.
+
+IMPORTANT:
+- A static file (CSS/JS/font/image) under /admin/ is NOT a BAC. Web apps commonly
+  serve static assets from the same path prefix. The browser needs these files to
+  render the login page itself.
+- You must PROVE why something is a vulnerability. "It returned 200" is not enough.
+- Explain what the content actually IS and what sensitive data it exposes.
+
+Respond ONLY in JSON:
 {{
-  "verdict": "real_bac | login_redirect | empty_page | error_page | unknown",
+  "verdict": "static_asset | login_redirect | error_page | public_content | real_bac",
   "is_real_bac": false,
   "confidence": 0,
-  "what_i_see": "Plain description of what this page actually displays",
-  "reason": "Why you made this decision — be specific about body content",
-  "evidence": "Exact snippet from body that confirms your verdict"
+  "content_type_detected": "css | javascript | html | json | image | font | text | binary | unknown",
+  "what_i_see": "Detailed description of what this content actually is",
+  "reason": "Specific technical reasoning for your decision — cite actual content from body",
+  "evidence": "Exact snippet from body that confirms your verdict",
+  "sensitive_data_found": "List any sensitive data if found, empty string if none"
 }}"""
 
         result = self._call(prompt, cache=False)
@@ -2977,37 +3073,117 @@ Respond ONLY in JSON (no markdown):
             return result
 
         # AI yo'q bo'lsa — heuristic fallback
-        body_lower  = child_body.lower()
-        login_words = ["login","sign in","username","password","log in",
-                       "please log in","authentication required","signin"]
+        return self._heuristic_403_analysis(child_url, child_status, child_body,
+                                            child_headers, page_title, ct_hdr)
+
+    def _heuristic_403_analysis(self, child_url: str, child_status: int,
+                                 child_body: str, child_headers: dict,
+                                 page_title: str, ct_hdr: str) -> dict:
+        """AI mavjud bo'lmaganda heuristic fallback."""
+        body_lower = child_body.lower()
+        ct_lower   = ct_hdr.lower() if ct_hdr else ""
+
+        # Content-Type asosida static asset aniqlash
+        static_ct = ["text/css", "application/javascript", "text/javascript",
+                     "image/", "font/", "application/font", "application/x-font",
+                     "application/woff", "application/octet-stream"]
+        if any(s in ct_lower for s in static_ct):
+            return {
+                "verdict": "static_asset", "is_real_bac": False,
+                "confidence": 95, "content_type_detected": ct_lower.split(";")[0],
+                "what_i_see": f"Static file (Content-Type: {ct_hdr})",
+                "reason": f"Content-Type '{ct_hdr}' indicates a static asset, not protected data",
+                "evidence": f"Content-Type: {ct_hdr}",
+                "sensitive_data_found": "",
+            }
+
+        # Body content asosida CSS/JS aniqlash (birinchi 50 qator)
+        first_lines = "\n".join(child_body.split("\n")[:50]).lower()
+        css_signals = sum(1 for p in [
+            r'[{};]', r'\{[^}]*:', r'@media', r'@import', r'@charset',
+            r'\.\w+\s*\{', r'#\w+\s*\{', r'color\s*:', r'font-', r'margin',
+            r'padding', r'display\s*:', r'background', r'border',
+        ] if re.search(p, first_lines))
+        if css_signals >= 4:
+            return {
+                "verdict": "static_asset", "is_real_bac": False,
+                "confidence": 90, "content_type_detected": "css",
+                "what_i_see": f"CSS stylesheet ({css_signals} CSS patterns found in first 50 lines)",
+                "reason": "Body contains CSS selectors, properties, and rules — this is a stylesheet",
+                "evidence": first_lines[:200],
+                "sensitive_data_found": "",
+            }
+
+        js_signals = sum(1 for p in [
+            r'\bfunction\b', r'\bvar\b', r'\blet\b', r'\bconst\b',
+            r'\bimport\b', r'\bexport\b', r'=>', r'\bclass\b',
+            r'\breturn\b', r'document\.', r'window\.',
+        ] if re.search(p, first_lines))
+        if js_signals >= 3:
+            return {
+                "verdict": "static_asset", "is_real_bac": False,
+                "confidence": 90, "content_type_detected": "javascript",
+                "what_i_see": f"JavaScript file ({js_signals} JS patterns found in first 50 lines)",
+                "reason": "Body contains JavaScript code — functions, variables, imports",
+                "evidence": first_lines[:200],
+                "sensitive_data_found": "",
+            }
+
+        # Login page aniqlash
+        login_words = ["login", "sign in", "username", "password", "log in",
+                       "please log in", "authentication required", "signin"]
         login_count = sum(1 for s in login_words if s in body_lower)
         title_lower = page_title.lower()
-
-        if login_count >= 2 or any(s in title_lower for s in ["login","sign in","auth","signin"]):
+        if login_count >= 2 or any(s in title_lower for s in ["login", "sign in", "auth", "signin"]):
             return {
-                "verdict":     "login_redirect",
-                "is_real_bac": False,
-                "confidence":  90,
-                "what_i_see":  f"Login/auth page (title: '{page_title}')",
-                "reason":      f"Body has {login_count} login signals; title='{page_title}'",
-                "evidence":    f"login signals: {[s for s in login_words if s in body_lower]}",
+                "verdict": "login_redirect", "is_real_bac": False,
+                "confidence": 90, "content_type_detected": "html",
+                "what_i_see": f"Login/auth page (title: '{page_title}')",
+                "reason": f"Body has {login_count} login signals; title='{page_title}'",
+                "evidence": f"login signals: {[s for s in login_words if s in body_lower]}",
+                "sensitive_data_found": "",
             }
+
+        # Bo'sh sahifa
         if len(child_body) < 200:
             return {
-                "verdict":     "empty_page",
-                "is_real_bac": False,
-                "confidence":  80,
-                "what_i_see":  "Nearly empty response",
-                "reason":      f"Body only {len(child_body)} bytes — no real content",
-                "evidence":    child_body[:100],
+                "verdict": "empty_page", "is_real_bac": False,
+                "confidence": 80, "content_type_detected": "unknown",
+                "what_i_see": "Nearly empty response",
+                "reason": f"Body only {len(child_body)} bytes — no real content",
+                "evidence": child_body[:100],
+                "sensitive_data_found": "",
             }
+
         return {
-            "verdict":     "unknown",
-            "is_real_bac": False,
-            "confidence":  0,
-            "what_i_see":  child_body[:200],
-            "reason":      "AI unavailable — manual review needed",
-            "evidence":    "",
+            "verdict": "unknown", "is_real_bac": False,
+            "confidence": 0, "content_type_detected": "unknown",
+            "what_i_see": child_body[:200],
+            "reason": "AI unavailable — manual review needed",
+            "evidence": "",
+            "sensitive_data_found": "",
+        }
+
+    def verify_child_access(self, parent_url: str, child_url: str,
+                            child_status: int, child_body: str,
+                            child_headers: dict, parent_signal: str) -> dict:
+        """
+        AI child URL haqiqatan BAC mi yoki login redirect mi ekanini aniqlaydi.
+        analyze_403_response ga delegate qiladi va natijani eski formatga o'giradi.
+        """
+        result = self.analyze_403_response(
+            parent_url=parent_url, child_url=child_url,
+            child_status=child_status, child_body=child_body,
+            child_headers=child_headers, context=f"parent_signal={parent_signal}",
+        )
+        # Eski API bilan moslik saqlash
+        return {
+            "verdict":     result.get("verdict", "unknown"),
+            "is_real_bac": result.get("is_real_bac", False),
+            "confidence":  result.get("confidence", 0),
+            "what_i_see":  result.get("what_i_see", ""),
+            "reason":      result.get("reason", ""),
+            "evidence":    result.get("evidence", ""),
         }
 
 
@@ -3149,11 +3325,47 @@ Respond ONLY in JSON:
 
 
     def fp_filter(self, finding: "Finding") -> dict:
-        prompt = f"""Is this finding a false positive?
-  Title: {finding.title}, Risk: {finding.risk}, Confidence: {finding.confidence}
-  Evidence: {finding.evidence}, Baseline diff: {finding.baseline_diff}
-  Body snippet: {finding.response_raw[:400]}
-Return JSON: {{"is_fp": false, "reason": "...", "adjusted_confidence": 75}}"""
+        # BAC findings uchun kuchliroq tahlil
+        is_bac = finding.owasp_id == "A01" or "403" in finding.title or "bypass" in finding.title.lower()
+        extra_rules = ""
+        if is_bac:
+            extra_rules = """
+
+SPECIAL RULES FOR BAC/403 BYPASS FINDINGS:
+- If the response body is CSS (selectors, properties, @media) → is_fp=true, reason="Static CSS file"
+- If the response body is JavaScript (function, var, import) → is_fp=true, reason="Static JS file"
+- If the Content-Type indicates a static asset (image, font, css, js) → is_fp=true
+- If the URL ends with .css, .js, .png, .jpg, .gif, .svg, .ico, .woff, .woff2, .ttf, .map,
+  .webp, .eot → is_fp=true, reason="Static asset file extension"
+- A static file under /admin/ is NOT a BAC — browsers need these to render the login page.
+- For real BAC: the body must contain ACTUAL protected data (admin UI, user records, configs, API keys).
+- If the evidence only says "403→200" without proving sensitive data access → is_fp=true."""
+
+        prompt = f"""Analyze this security finding for false positives. Be STRICT.
+
+Finding:
+  Title:         {finding.title}
+  OWASP:         {finding.owasp_id} — {finding.owasp_name}
+  Risk:          {finding.risk}
+  Confidence:    {finding.confidence}%
+  URL:           {finding.url}
+  Payload:       {finding.payload[:200]}
+  Evidence:      {finding.evidence}
+  Baseline diff: {finding.baseline_diff}
+  Tool:          {finding.tool}
+
+Response body (first 500 chars):
+---
+{finding.response_raw[:500]}
+---
+{extra_rules}
+
+GENERAL RULES:
+- A finding with no concrete evidence of exploitability → is_fp=true
+- Generic error pages, WAF blocks, empty responses → is_fp=true
+- If evidence clearly shows real vulnerability → is_fp=false, increase confidence
+
+Return JSON: {{"is_fp": false, "reason": "specific reason", "adjusted_confidence": 75}}"""
         return self._call(prompt, cache=False) or {"is_fp": False, "reason": "", "adjusted_confidence": finding.confidence}
 
 
@@ -4248,13 +4460,47 @@ class Recursive403Bypasser:
             bl      = self.client.get(url)
             bl_hash = hashlib.md5(bl["body"].encode()).hexdigest() if bl["body"] else ""
 
-            def is_bypass(r: dict) -> bool:
+            def is_potential_bypass(r: dict) -> bool:
+                """Dastlabki tezkor tekshiruv — AI ga yuborishdan oldin."""
                 if r["status"] not in (200, 206): return False
                 if not r["body"] or len(r["body"]) < 50: return False
                 if hashlib.md5(r["body"].encode()).hexdigest() == bl_hash: return False
                 login_kw = sum(1 for s in ["login","sign in","password","username"]
                                if s in r["body"].lower())
                 return login_kw < 2
+
+            def ai_verify_bypass(r: dict, test_url: str, bypass_type: str) -> Optional[dict]:
+                """
+                AI har bir 403→200 response'ni ko'radi va tahlil qiladi.
+                Static file, login page, xato sahifa bo'lsa — None qaytaradi.
+                Haqiqiy BAC bo'lsa — AI natijasini qaytaradi.
+                """
+                ai_result = self.ai.analyze_403_response(
+                    parent_url=url,
+                    child_url=test_url,
+                    child_status=r["status"],
+                    child_body=r["body"],
+                    child_headers=r.get("headers", {}),
+                    context=f"recursive_403_bypass_{bypass_type}_depth{depth}",
+                )
+                verdict     = ai_result.get("verdict", "unknown")
+                is_real_bac = ai_result.get("is_real_bac", False)
+                confidence  = ai_result.get("confidence", 0)
+                reason      = ai_result.get("reason", "")
+                ct_detected = ai_result.get("content_type_detected", "unknown")
+
+                if is_real_bac and confidence >= MIN_CONFIDENCE:
+                    console.print(
+                        f"  [bold red]  🎯 AI-confirmed {bypass_type} bypass: {test_url}[/bold red]\n"
+                        f"  [red]     {verdict}: {ai_result.get('what_i_see', '')}[/red]"
+                    )
+                    return ai_result
+                else:
+                    console.print(
+                        f"  [dim yellow]  ✗ {bypass_type} skip: {test_url} — "
+                        f"{verdict} ({ct_detected}) | {reason[:60]}[/dim yellow]"
+                    )
+                    return None
 
             # ── 2. Path variants ──────────────────────────────────────
             for variant_fn in self.PATH_VARIANTS:
@@ -4263,38 +4509,43 @@ class Recursive403Bypasser:
                 except Exception:
                     continue
                 r = self.client.get(test_url)
-                if is_bypass(r):
-                    suffix = test_url[len(url):]
-                    findings.append(self._make_finding(
-                        f"403 Bypass (path variant '{suffix}'): {path}",
-                        test_url, path, f"suffix='{suffix}'",
-                        f"curl -v '{test_url}'", r["body"][:300], depth))
-                    console.print(f"  [bold red]  🎯 403→200 path bypass: {test_url}[/bold red]")
+                if is_potential_bypass(r):
+                    ai_result = ai_verify_bypass(r, test_url, "path")
+                    if ai_result:
+                        suffix = test_url[len(url):]
+                        findings.append(self._make_finding(
+                            f"403 Bypass (path variant '{suffix}'): {path}",
+                            test_url, path, f"suffix='{suffix}'",
+                            f"curl -v '{test_url}'", r["body"][:300], depth,
+                            ai_result=ai_result))
 
             # ── 3. Header variants ────────────────────────────────────
             for hdrs in self.HEADER_VARIANTS:
                 h = {k: (path if v == "PLACEHOLDER" else v) for k,v in hdrs.items()}
                 r = self.client._request(url, "GET", headers=h)
-                if is_bypass(r):
+                if is_potential_bypass(r):
                     hname = list(h.keys())[0]
-                    findings.append(self._make_finding(
-                        f"403 Bypass (header {hname}): {path}",
-                        url, path, f"{hname}: {list(h.values())[0]}",
-                        f"curl -H '{hname}: {list(h.values())[0]}' '{url}'",
-                        r["body"][:300], depth))
-                    console.print(f"  [bold red]  🎯 403→200 header bypass: {hname}[/bold red]")
+                    ai_result = ai_verify_bypass(r, url, f"header_{hname}")
+                    if ai_result:
+                        findings.append(self._make_finding(
+                            f"403 Bypass (header {hname}): {path}",
+                            url, path, f"{hname}: {list(h.values())[0]}",
+                            f"curl -H '{hname}: {list(h.values())[0]}' '{url}'",
+                            r["body"][:300], depth, ai_result=ai_result))
 
             # ── 4. Method override ────────────────────────────────────
             for method in ("POST","PUT","PATCH","OPTIONS","HEAD"):
                 r = self.client._request(url, method)
-                if is_bypass(r):
-                    findings.append(self._make_finding(
-                        f"403 Bypass (method {method}): {path}",
-                        url, path, f"HTTP Method: {method}",
-                        f"curl -X {method} '{url}'",
-                        r["body"][:300], depth))
+                if is_potential_bypass(r):
+                    ai_result = ai_verify_bypass(r, url, f"method_{method}")
+                    if ai_result:
+                        findings.append(self._make_finding(
+                            f"403 Bypass (method {method}): {path}",
+                            url, path, f"HTTP Method: {method}",
+                            f"curl -X {method} '{url}'",
+                            r["body"][:300], depth, ai_result=ai_result))
 
-            # ── 5. REKURSIV inner fuzz — BU V6.0 DA YO'Q! ─────────────
+            # ── 5. REKURSIV inner fuzz ─────────────────────────────────
             # 403 bo'lgan child'lar ham queue ga qo'shiladi
             if depth < max_depth and not is_file_like_path and shutil.which("ffuf"):
                 ctx = {"url":url,"param":"dir_fuzz","tech":"dirs","param_type":"dirs","server":""}
@@ -4305,7 +4556,7 @@ class Recursive403Bypasser:
                     try:
                         subprocess.run(
                             f"ffuf -u '{url}/FUZZ' -w '{wordlist}' "
-                            f"-t 60 -timeout 8 -maxtime 45 -mc 200,201,301,302,403 "  # 403 ham!
+                            f"-t 60 -timeout 8 -maxtime 45 -mc 200,201,301,302,403 "
                             f"-o '{out_file}' -of json -s",
                             shell=True, capture_output=True, timeout=60)
                     except subprocess.TimeoutExpired:
@@ -4319,12 +4570,17 @@ class Recursive403Bypasser:
                             if not child_url: continue
 
                             if child_status in (200, 201):
-                                # To'g'ridan finding
-                                findings.append(self._make_finding(
-                                    f"Forbidden parent, accessible child: {child_url}",
-                                    child_url, child_url, child_url,
-                                    f"curl -v '{child_url}'", "", depth))
-                                console.print(f"  [bold red]  🎯 403→child 200: {child_url}[/bold red]")
+                                # AI har bir 200 child'ni tekshiradi
+                                child_resp = self.client.get(child_url)
+                                if child_resp["status"] in (200, 201) and child_resp["body"]:
+                                    ai_result = ai_verify_bypass(child_resp, child_url, "inner_ffuf")
+                                    if ai_result:
+                                        findings.append(self._make_finding(
+                                            f"Forbidden parent, accessible child: {child_url}",
+                                            child_url, child_url, child_url,
+                                            f"curl -v '{child_url}'",
+                                            child_resp["body"][:300], depth,
+                                            ai_result=ai_result))
 
                             elif child_status == 403 and child_url not in self._visited:
                                 # REKURSIV — 403 child ham queue ga!
@@ -4336,20 +4592,46 @@ class Recursive403Bypasser:
 
         return findings
 
-    def _make_finding(self, title, url, path, payload, exploit, resp, depth) -> Finding:
+    def _make_finding(self, title, url, path, payload, exploit, resp, depth,
+                      ai_result: dict = None) -> Finding:
+        """
+        Finding yaratadi. AI natijasi bo'lsa — evidence va confidence
+        AI'dan olinadi. confirmed faqat AI tasdiqlagan bo'lsa True.
+        """
+        ai_reason   = ""
+        ai_what     = ""
+        ai_evidence = ""
+        confidence  = 75  # default — AI tasdiqlamaguncha past
+        confirmed   = False
+
+        if ai_result:
+            ai_reason   = ai_result.get("reason", "")
+            ai_what     = ai_result.get("what_i_see", "")
+            ai_evidence = ai_result.get("evidence", "")
+            confidence  = ai_result.get("confidence", 75)
+            confirmed   = ai_result.get("is_real_bac", False) and confidence >= 70
+            sensitive   = ai_result.get("sensitive_data_found", "")
+
+        evidence_text = (
+            f"HTTP 403 → 200 bypass at depth {depth}. Path: {path}. "
+            f"AI verdict: {ai_result.get('verdict', 'unknown') if ai_result else 'not_verified'}. "
+            f"AI sees: {ai_what[:150]}. "
+            f"AI reason: {ai_reason[:150]}"
+        )
+
         return Finding(
             owasp_id="A01", owasp_name="Broken Access Control",
-            title=title, risk="High", confidence=88,
+            title=title, risk="High", confidence=confidence,
             url=url, method="GET", param="URL/Header",
             payload=payload[:200],
-            evidence=f"HTTP 403 → 200 bypass at depth {depth}. Path: {path}",
+            evidence=evidence_text,
             baseline_diff="403→200",
-            tool_output=resp[:300],
+            tool_output=resp[:300] if resp else "",
             request_raw=f"GET {url}",
-            response_raw=resp[:300],
+            response_raw=resp[:300] if resp else "",
             exploit_cmd=exploit,
             remediation="Enforce authorization at application layer for ALL child paths recursively.",
-            confirmed=True, tool="recursive_403",
+            confirmed=confirmed, tool="recursive_403",
         )
 
 
@@ -4364,24 +4646,43 @@ class FPFilter:
     def filter(self, findings: list[Finding]) -> list[Finding]:
         passed = []
         for f in findings:
-            if f.confirmed:
+            # BAC/403 bypass findings — confirmed bo'lsa ham AI FP filter'dan o'tkazish
+            # Chunki confirmed=True bo'lgan 403→200 ham static file bo'lishi mumkin
+            is_bac_finding = (
+                f.owasp_id == "A01" and
+                ("403" in f.title or "bypass" in f.title.lower() or
+                 "acl" in f.title.lower() or "forbidden" in f.title.lower())
+            )
+
+            if f.confirmed and not is_bac_finding:
+                # Non-BAC confirmed findings — to'g'ridan o'tkazish
                 passed.append(f)
                 continue
+
             if self._quick_fp(f):
                 f.fp_filtered = True
                 if not f.suppression_reason:
                     f.suppression_reason = "Quick filter: no reproducible diff or response looks like generic blocking."
                 continue
+
             fp_result = self.ai.fp_filter(f)
             if fp_result.get("is_fp"):
                 f.fp_filtered = True
+                f.confirmed   = False  # AI FP desa confirmed ham bekor
                 f.suppression_reason = fp_result.get("reason", "") or "AI FP filter marked this as false positive."
+                console.print(
+                    f"  [dim yellow]  FP removed: {f.title[:60]} — "
+                    f"{f.suppression_reason[:80]}[/dim yellow]"
+                )
                 continue
+
             f.confidence = int(fp_result.get("adjusted_confidence", f.confidence))
             if f.confidence < MIN_CONFIDENCE:
                 f.fp_filtered = True
+                f.confirmed   = False
                 f.suppression_reason = f"Confidence dropped below threshold after FP filter: {f.confidence}% < {MIN_CONFIDENCE}%."
                 continue
+
             if f.risk in ("Critical", "High") and not f.confirmed:
                 verify = self.ai.verify_finding(f, self.client)
                 f.confirmed = verify.get("confirmed", False)
@@ -4844,11 +5145,21 @@ class PentestPipeline:
         acl_findings = []
         for bypass in crawler.acl_bypass_findings:
             ai_reason  = bypass.get("ai_reason", "")
-            confidence = bypass.get("confidence", 85)
+            confidence = bypass.get("confidence", 75)
+            ai_verdict = bypass.get("ai_verdict", "unknown")
+            ai_what    = bypass.get("ai_what", "")
+
+            # AI tasdiqlagan bo'lsa — confidence va ai_reason bo'ladi
+            # AI tasdiqlamagan (eski format) — confidence 85 default, lekin
+            # confirmed=False qo'yiladi — FPFilter tekshiradi
+            has_ai_confirmation = bool(ai_reason and confidence >= MIN_CONFIDENCE)
+
             evidence   = (
                 f"Parent {bypass['parent_403']} restricted, "
                 f"child {bypass['child_200']} accessible ({bypass['body_size']} bytes). "
-                f"AI: {ai_reason}"
+                f"AI verdict: {ai_verdict}. "
+                f"AI sees: {ai_what[:150]}. "
+                f"AI reason: {ai_reason}"
             )
             f = Finding(
                 owasp_id="A01", owasp_name="Broken Access Control",
@@ -4863,7 +5174,8 @@ class PentestPipeline:
                 response_raw=bypass["body_snippet"][:400],
                 exploit_cmd=f"curl -v '{bypass['child_200']}'",
                 remediation="Enforce access control checks at every path level, not just the parent.",
-                confirmed=True,
+                confirmed=has_ai_confirmation,
+                tool="acl_bypass",
             )
             acl_findings.append(f)
 
