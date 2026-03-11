@@ -1,0 +1,3 @@
+ollama>=0.3.0       # AI backend
+rich>=13.7.0        # terminal UI
+mitmproxy>=10.0.0   # proxy mode (ixtiyoriy)
