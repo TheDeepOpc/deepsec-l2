@@ -957,8 +957,8 @@ class ParamDiscoverer:
         self.wl_selector = wl_selector
 
     def discover(self, ep: Endpoint) -> Endpoint:
-         resp = self.client.get(ep.url) if ep.method == "GET" else \
-             self.client.post(ep.url, data=self._normalize_submit_params(ep.params))
+        resp = self.client.get(ep.url) if ep.method == "GET" else \
+            self.client.post(ep.url, data=self._normalize_submit_params(ep.params))
         if resp["status"] == 0:
             return ep
         body = resp["body"]
