@@ -78,8 +78,28 @@ class PentestPipeline:
                         active_role = "admin"
 
             # Ensure crawler/fuzzer use authenticated session when available.
-            if active_role and session_mgr.activate_role(active_role):
-                console.print(f"[green]✓ Active scan session switched to role '{active_role}'[/green]")
+            if active_role:
+                switched = False
+                activate_fn = getattr(session_mgr, "activate_role", None)
+                if callable(activate_fn):
+                    switched = bool(activate_fn(active_role))
+                else:
+                    # Backward-compat fallback for older SessionManager builds.
+                    role_ctx = getattr(session_mgr, "roles", {}).get(active_role)
+                    role_sess = getattr(role_ctx, "session", None)
+                    if role_sess is not None:
+                        self.session.cookies = dict(getattr(role_sess, "cookies", {}) or {})
+                        self.session.headers = dict(getattr(role_sess, "headers", {}) or {})
+                        self.session.jwt_token = getattr(role_sess, "jwt_token", "") or ""
+                        self.session.csrf_token = getattr(role_sess, "csrf_token", "") or ""
+                        self.session.role = active_role
+                        self.session.logged_in = True
+                        switched = True
+
+                if switched:
+                    console.print(f"[green]✓ Active scan session switched to role '{active_role}'[/green]")
+                else:
+                    console.print("[yellow]⚠ Could not activate authenticated role session; continuing.[/yellow]")
 
         # Step 1b: OAuth/SAML/CSRF detection on login page
         oauth_saml_findings = []
