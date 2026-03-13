@@ -919,7 +919,7 @@ class Crawler:
     def _url_to_endpoint(self, url: str, method: str, depth: int, source: str) -> Endpoint:
         parsed = urllib.parse.urlparse(url)
         params = {}
-        for k, v in urllib.parse.parse_qsl(parsed.query):
+        for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
             params[f"query:{k}"] = v
         return Endpoint(url=url, method=method, params=params, discovered_by=source, depth=depth)
 
@@ -957,15 +957,15 @@ class ParamDiscoverer:
         self.wl_selector = wl_selector
 
     def discover(self, ep: Endpoint) -> Endpoint:
-        resp = self.client.get(ep.url) if ep.method == "GET" else \
-               self.client.post(ep.url, data=ep.params)
+         resp = self.client.get(ep.url) if ep.method == "GET" else \
+             self.client.post(ep.url, data=self._normalize_submit_params(ep.params))
         if resp["status"] == 0:
             return ep
         body = resp["body"]
         ct   = resp["headers"].get("content-type", "").lower()
 
         parsed = urllib.parse.urlparse(ep.url)
-        for k, v in urllib.parse.parse_qsl(parsed.query):
+        for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
             ep.params[f"query:{k}"] = v
         for m in re.finditer(r'/(\d+)(?=/|$)', parsed.path):
             ep.params[f"path:id"] = m.group(1)
@@ -990,7 +990,7 @@ class ParamDiscoverer:
             ep.params.update(self._from_graphql(ep.url))
             ep.body_type = "json"
 
-        if shutil.which("ffuf"):
+        if shutil.which("ffuf") and not self._has_explicit_user_params(ep):
             # AI kontekstini to'plash
             server_hdr = resp["headers"].get("server", resp["headers"].get("Server", ""))
             tech_info  = RiskScorer.detect_tech(resp)
@@ -1007,6 +1007,13 @@ class ParamDiscoverer:
 
         return ep
 
+    def _has_explicit_user_params(self, ep: Endpoint) -> bool:
+        for key in ep.params:
+            prefix = key.split(":", 1)[0] if ":" in key else "query"
+            if prefix in ("query", "form", "body", "json", "hidden", "graphql_input"):
+                return True
+        return False
+
     def _from_html_forms(self, body: str) -> dict:
         params = {}
         for m in re.finditer(
@@ -1016,7 +1023,8 @@ class ParamDiscoverer:
             itype_m = re.search(r'type=["\']([^"\']+)["\']', m.group(0), re.I)
             itype   = itype_m.group(1).lower() if itype_m else "text"
             if itype not in ("submit", "button", "image", "reset"):
-                params[f"form:{m.group(1)}"] = m.group(2) or ""
+                field_name = m.group(1)
+                params[f"form:{field_name}"] = m.group(2) or self._smart_default(field_name, itype)
         return params
 
     def _from_hidden_inputs(self, body: str) -> dict:
@@ -1027,6 +1035,39 @@ class ParamDiscoverer:
         ):
             params[f"hidden:{m.group(1)}"] = m.group(2)
         return params
+
+    def _normalize_submit_params(self, params: dict) -> dict:
+        normalized = {}
+        for key, value in params.items():
+            if key.startswith(("header:", "path:", "cookie:")):
+                continue
+            clean_key = key.split(":")[-1]
+            normalized[clean_key] = value if value not in (None, "") else self._smart_default(clean_key)
+        return normalized
+
+    def _smart_default(self, field_name: str, input_type: str = "text") -> str:
+        name = (field_name or "").lower()
+        if "mail" in name:
+            return "alice@example.com"
+        if "user" in name or "login" in name or name == "name":
+            return "alice"
+        if "pass" in name:
+            return "Password123!"
+        if "account" in name and "from" in name:
+            return "1001"
+        if "account" in name and "to" in name:
+            return "1002"
+        if name in ("id", "user_id", "account_id"):
+            return "1"
+        if "amount" in name or "price" in name or "total" in name:
+            return "10"
+        if "note" in name or "message" in name or "desc" in name:
+            return "test note"
+        if "search" in name or name == "q":
+            return "test"
+        if input_type == "number":
+            return "1"
+        return "test"
 
     def _from_json(self, body: str) -> dict:
         params = {}
@@ -1370,7 +1411,7 @@ class BaselineEngine:
         if ep.method == "GET":
             r = self.client.get(ep.url)
         else:
-            r = self.client.post(ep.url, data=ep.params)
+            r = self.client.post(ep.url, data=self._normalize_submit_params(ep))
 
         # 429 rate-limit adaptive handling
         if r.get("status") == 429:
@@ -1392,7 +1433,7 @@ class BaselineEngine:
             if ep.method == "GET":
                 r = self.client.get(ep.url)
             else:
-                r = self.client.post(ep.url, data=ep.params)
+                r = self.client.post(ep.url, data=self._normalize_submit_params(ep))
         else:
             self._consecutive_429 = 0
 
@@ -1409,6 +1450,38 @@ class BaselineEngine:
                 console.print("  [bold yellow]⚠ WAF/Rate-limiter detected in baseline — slowing down[/bold yellow]")
 
         return r
+
+    def _normalize_submit_params(self, ep: Endpoint) -> dict:
+        normalized = {}
+        for key, value in ep.params.items():
+            if key.startswith(("header:", "path:", "cookie:")):
+                continue
+            clean_key = key.split(":")[-1]
+            if value in (None, ""):
+                normalized[clean_key] = self._default_value(clean_key)
+            else:
+                normalized[clean_key] = value
+        return normalized
+
+    def _default_value(self, key: str) -> str:
+        name = (key or "").lower()
+        if "mail" in name:
+            return "alice@example.com"
+        if "user" in name or "login" in name or name == "name":
+            return "alice"
+        if "pass" in name:
+            return "Password123!"
+        if "account" in name and "from" in name:
+            return "1001"
+        if "account" in name and "to" in name:
+            return "1002"
+        if name in ("id", "user_id", "account_id"):
+            return "1"
+        if "amount" in name or "price" in name or "total" in name:
+            return "10"
+        if "note" in name or "message" in name or "desc" in name:
+            return "test note"
+        return "test"
 
     def _extract_title(self, body: str) -> str:
         m = re.search(r'<title[^>]*>(.*?)</title>', body, re.I | re.S)

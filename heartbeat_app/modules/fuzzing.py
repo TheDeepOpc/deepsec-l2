@@ -428,7 +428,7 @@ class OWASPFuzzEngine:
         base_fp  = self.baseline.get(ep)
         results  = []
         for check_id, cfg in self.OWASP_TOOL_MAP.items():
-            relevant_params = self._get_relevant_params(ep, cfg["params"])
+            relevant_params = self._get_relevant_params(ep, cfg["params"], check_id)
             for param_key in relevant_params[:8]:
                 param_name = param_key.split(":")[-1]
                 for tool_name in cfg["tools"]:
@@ -455,7 +455,7 @@ class OWASPFuzzEngine:
             else:
                 pname = param_key.split(":")[-1]
                 parsed = urllib.parse.urlparse(ep.url)
-                qs = dict(urllib.parse.parse_qsl(parsed.query))
+                qs = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
                 if pname and pname not in qs:
                     qs[pname] = str(clean_params.get(pname, "1"))
                 target_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
@@ -465,11 +465,11 @@ class OWASPFuzzEngine:
             return self._auth_sqli_probe(ep, param_key, param_name)
 
         elif tool_name == "dalfox" and check_id == "A03_xss":
-            data = urllib.parse.urlencode(ep.params) if ep.method == "POST" else ""
+            data = urllib.parse.urlencode(self._tool_submit_params(ep)) if ep.method == "POST" else ""
             tool_out = self.kali.dalfox(ep.url, param_key, data, ep.method)
 
         elif tool_name == "commix" and check_id == "A03_cmdi":
-            data = urllib.parse.urlencode(ep.params) if ep.method == "POST" else ""
+            data = urllib.parse.urlencode(self._tool_submit_params(ep)) if ep.method == "POST" else ""
             tool_out = self.kali.commix(ep.url, param_key, data, ep.method)
 
         elif tool_name == "ffuf_lfi":
@@ -533,7 +533,7 @@ class OWASPFuzzEngine:
             return None
 
         # Quick payloads direct fuzz
-        payloads    = self._get_quick_payloads(check_id)
+        payloads    = self._get_quick_payloads(check_id, param_key, ep)
         best_resp   = None
         best_diff   = {}
         best_payload = ""
@@ -967,7 +967,7 @@ class OWASPFuzzEngine:
             # Check for file content leaks
             if ("root:" in body and "/bin/" in body) or \
                "[extensions]" in body or \
-               (resp.get("status") == 200 and len(body) > len(base_fp.body_len or 0) + 100):
+                    (resp.get("status") == 200 and len(body) > (base_fp.body_len or 0) + 100):
                 return Finding(
                     owasp_id="A03", owasp_name="Injection",
                     title=f"XXE — XML External Entity Injection: {ep.url}",
@@ -1196,7 +1196,7 @@ class OWASPFuzzEngine:
         params[param_key] = payload
         if ep.method == "GET":
             parsed = urllib.parse.urlparse(ep.url)
-            qs     = dict(urllib.parse.parse_qsl(parsed.query))
+            qs     = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
             qs[param_key.split(":")[-1]] = payload
             new_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
             return self.client.get(new_url)
@@ -1206,37 +1206,62 @@ class OWASPFuzzEngine:
             return self.client.post(ep.url, json_data=clean)
         return self.client.post(ep.url, data=clean)
 
+    def _tool_submit_params(self, ep: Endpoint) -> dict:
+        clean = {}
+        for key, value in ep.params.items():
+            if key.startswith(("header:", "path:", "cookie:")):
+                continue
+            clean_key = key.split(":")[-1]
+            clean[clean_key] = value if value not in (None, "") else "test"
+        return clean
+
     def _inject_fuzz(self, url: str, param_key: str, placeholder: str) -> str:
         param_name = param_key.split(":")[-1]
         parsed     = urllib.parse.urlparse(url)
-        qs         = dict(urllib.parse.parse_qsl(parsed.query))
+        qs         = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
         qs[param_name] = placeholder
         return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
 
     def _rebuild_url(self, url: str, param: str, value: str) -> str:
         parsed = urllib.parse.urlparse(url)
-        qs     = dict(urllib.parse.parse_qsl(parsed.query))
+        qs     = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
         qs[param] = value
         return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
 
-    def _get_relevant_params(self, ep: Endpoint, param_types: list) -> list:
+    def _get_relevant_params(self, ep: Endpoint, param_types: list, check_id: str = "") -> list:
         if not param_types:
             return []
         relevant = []
         for k in ep.params:
             prefix = k.split(":")[0]
             if prefix in param_types or any(t in prefix for t in param_types):
-                relevant.append(k)
+                if self._is_param_relevant_for_check(check_id, k, ep.params.get(k)):
+                    relevant.append(k)
         for k in ep.params:
             if ":" not in k:
-                relevant.append(k)
+                if self._is_param_relevant_for_check(check_id, k, ep.params.get(k)):
+                    relevant.append(k)
         return list(dict.fromkeys(relevant))
 
-    def _get_quick_payloads(self, check_id: str) -> list:
+    def _get_quick_payloads(self, check_id: str, param_key: str = "", ep: Optional[Endpoint] = None) -> list:
         """
         Quick inline payloads — used separately from wordlist tools
         for fast baseline diff checking.
         """
+        param_name = param_key.split(":")[-1].lower() if param_key else ""
+        param_value = ""
+        if ep is not None and param_key:
+            param_value = str(ep.params.get(param_key, "") or "")
+
+        if check_id == "A03_sqli" and self._is_strict_numeric_param(param_name, param_value):
+            return []
+        if check_id == "A03_lfi" and not self._looks_file_like_param(param_name):
+            return []
+        if check_id == "A03_cmdi" and (self._is_secret_param(param_name) or self._is_strict_numeric_param(param_name, param_value)):
+            return []
+        if check_id == "A03_ssti" and (self._is_secret_param(param_name) or self._is_strict_numeric_param(param_name, param_value)):
+            return []
+
         return {
             "A03_sqli":  self.SQLI_QUICK,
             "A03_xss":   self.XSS_QUICK,
@@ -1247,6 +1272,45 @@ class OWASPFuzzEngine:
             "A03_xxe":   self.XXE_QUICK,
             "A08_deser": self.DESER_QUICK_PHP,
         }.get(check_id, ["test", "1", "'", "<"])
+
+    def _is_param_relevant_for_check(self, check_id: str, param_key: str, value: Any) -> bool:
+        name = param_key.split(":")[-1].lower()
+        if not check_id:
+            return True
+        if self._is_secret_param(name) and check_id in {"A03_sqli", "A03_cmdi", "A03_lfi", "A03_ssti"}:
+            return False
+        if check_id == "A03_lfi":
+            return self._looks_file_like_param(name)
+        if check_id == "A03_cmdi":
+            return not self._is_strict_numeric_param(name, value) and not self._looks_password_change_param(name)
+        if check_id == "A03_ssti":
+            return not self._is_strict_numeric_param(name, value) and not self._looks_password_change_param(name)
+        if check_id == "A03_sqli":
+            if self._is_strict_numeric_param(name, value):
+                return False
+            return not self._looks_password_change_param(name)
+        return True
+
+    def _is_secret_param(self, name: str) -> bool:
+        return any(token in name for token in ("csrf", "token", "auth", "session"))
+
+    def _looks_password_change_param(self, name: str) -> bool:
+        return any(token in name for token in ("password", "confirm_password", "new_password", "old_password"))
+
+    def _looks_file_like_param(self, name: str) -> bool:
+        return any(token in name for token in (
+            "file", "path", "dir", "folder", "include", "template", "view", "page", "download", "document"
+        ))
+
+    def _is_strict_numeric_param(self, name: str, value: Any) -> bool:
+        numeric_tokens = (
+            "id", "amount", "price", "total", "count", "qty", "quantity", "number",
+            "account", "balance", "zip", "phone", "age", "year", "month", "day"
+        )
+        value_s = str(value or "").strip()
+        if any(token in name for token in numeric_tokens):
+            return True
+        return bool(value_s) and bool(re.fullmatch(r"-?\d+(?:\.\d+)?", value_s))
 
     def _diff_is_interesting(self, diff: dict) -> bool:
         return (

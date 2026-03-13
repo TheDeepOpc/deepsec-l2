@@ -140,7 +140,15 @@ Size diff: {context.get('size_diff')} ({context.get('size_pct')}%), Time anomaly
 New errors: {context.get('new_errors')}
 Response snippet: {context.get('body_snippet', '')[:600]}
 Tool output: {context.get('tool_output', '')[:800]}
-Is this a real vulnerability or false positive?"""
+STRICT RULES:
+1) Do NOT report SQL injection based only on 400/500 status changes, generic exceptions, or larger error pages.
+2) Report SQL injection only if there is DB-specific evidence: SQL syntax error text, sqlmap confirmation, boolean/time-based behavior, UNION/database markers.
+3) Do NOT report LFI only because file names are mentioned. Report LFI only if actual file content is disclosed (e.g. passwd entries, win.ini sections, hosts file content).
+4) Input-validation/type-conversion errors like "invalid literal for int()", "could not convert string to float", or plain ValueError/Traceback are NOT injection evidence.
+5) If evidence is weak or ambiguous, mark as false positive.
+
+Return ONLY JSON like:
+{{"found": false, "confidence": 0, "owasp_id": "A05", "risk": "Low", "title": "", "evidence": "", "remediation": "", "exploit_cmd": "", "reason": ""}}"""
         return self._call(prompt, cache=False)
 
     def verify_finding(self, finding: "Finding", client: HTTPClient) -> dict:
@@ -996,6 +1004,8 @@ class FPFilter:
         if (f.baseline_diff == "{}" or not f.baseline_diff) and not has_supporting_signal:
             return True
         ev = (f.evidence or "").lower()
+        title = (f.title or "").lower()
+        out = (f.tool_output or "").lower()
         # Contradiction guard: vulnerability claim but verification says login redirect.
         if "verified:" in ev and any(
             s in ev for s in [
@@ -1015,7 +1025,69 @@ class FPFilter:
             if not f.suppression_reason:
                 f.suppression_reason = "Response body matches generic blocking page."
             return True
+        if self._looks_like_generic_sqli_fp(f, title, ev, out, body):
+            if not f.suppression_reason:
+                f.suppression_reason = "SQLi suppressed: only generic error/status change without database-specific proof."
+            return True
+        if self._looks_like_input_validation_fp(f, title, ev, out, body):
+            if not f.suppression_reason:
+                f.suppression_reason = "Injection suppressed: payload only triggered input validation/type-conversion failure."
+            return True
+        if self._looks_like_generic_lfi_fp(f, title, ev, out, body):
+            if not f.suppression_reason:
+                f.suppression_reason = "LFI suppressed: file names referenced but no actual file content disclosure proven."
+            return True
         return False
+
+    def _looks_like_generic_sqli_fp(self, f: Finding, title: str, ev: str, out: str, body: str) -> bool:
+        if "sql" not in title and "sql injection" not in ev and f.tool != "sqlmap":
+            return False
+
+        combined = "\n".join([title, ev, out, body])
+        strong_markers = [
+            "sql syntax", "mysql", "mariadb", "postgres", "postgresql", "sqlite",
+            "oracle", "odbc", "sql server", "unterminated quoted string",
+            "boolean-based blind", "time-based blind", "union select", "back-end dbms",
+            "is vulnerable", "parameter '", "payload:",
+        ]
+        if any(marker in combined for marker in strong_markers):
+            return False
+
+        generic_only = any(marker in combined for marker in [
+            "status=500", "status 500", "fuzzed: 500", "size diff", "internal server error", "traceback",
+        ])
+        return generic_only or f.tool in ("auth_sqli_probe", "sqlmap")
+
+    def _looks_like_input_validation_fp(self, f: Finding, title: str, ev: str, out: str, body: str) -> bool:
+        combined = "\n".join([title, ev, out, body])
+        if "injection" not in title and f.owasp_id != "A03":
+            return False
+        validation_markers = [
+            "invalid literal for int", "could not convert string to float", "valueerror",
+            "invalid literal", "traceback", "typeerror",
+        ]
+        if not any(marker in combined for marker in validation_markers):
+            return False
+        strong_exec_markers = [
+            "uid=", "gid=", "root:x:0:0:", "daemon:x:", "sql syntax", "mysql", "postgres", "sqlite",
+        ]
+        return not any(marker in combined for marker in strong_exec_markers)
+
+    def _looks_like_generic_lfi_fp(self, f: Finding, title: str, ev: str, out: str, body: str) -> bool:
+        if "lfi" not in title and "file inclusion" not in title and "passwd" not in ev:
+            return False
+
+        combined = "\n".join([title, ev, out, body])
+        strong_content_markers = [
+            "root:x:0:0:", "daemon:x:", "/bin/bash", "/usr/sbin/nologin",
+            "[extensions]", "for 16-bit app support", "localhost", "127.0.0.1",
+            "::1", "mail", "www-data", "nobody:x:",
+        ]
+        if any(marker in combined for marker in strong_content_markers):
+            return False
+
+        weak_name_markers = ["/etc/passwd", "/etc/shadow", "win.ini", ".htpasswd", "/etc/hosts"]
+        return any(marker in combined for marker in weak_name_markers)
 
     def _auto_confirm_by_evidence(self, f: Finding) -> bool:
         ev = (f.evidence or "").lower()

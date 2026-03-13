@@ -1,4 +1,16 @@
+import hashlib
+import json
+import re
+import threading
+from pathlib import Path
+from typing import Any, Optional
+
 from .base import *
+from .. import engine as _engine
+
+console = getattr(_engine, "console", None)
+HAS_OLLAMA = getattr(_engine, "HAS_OLLAMA", False)
+MODEL_NAME = getattr(_engine, "MODEL_NAME", "")
 
 class WordlistScanner:
     """
@@ -158,7 +170,7 @@ class AIWordlistSelector:
     3. If AI can't select or none exist — built-in fallback is used
     """
 
-    def __init__(self, ai: "AIEngine"):
+    def __init__(self, ai: Any):
         self.ai = ai
         self._cache: dict[str, str] = {}  # (category+context_hash) → path
         # Prefer practical, widely used wordlists first.
@@ -166,9 +178,9 @@ class AIWordlistSelector:
             "dirs": [
                 "directory-list-2.3-medium",
                 "directory-list-2.3-small",
-                "common.txt",
                 "raft-medium-directories",
-                "common_directories",
+                "raft-small-directories",
+                "common.txt",
             ],
             "params": [
                 "burp-parameter-names",
@@ -192,6 +204,7 @@ class AIWordlistSelector:
         # Explicitly de-prioritize niche/overly noisy lists.
         self._avoid_names: dict[str, list[str]] = {
             "lfi": ["jhaddix"],
+            "dirs": ["common_directories"],
         }
 
     def select(self, category: str, context: dict) -> str:
@@ -298,9 +311,15 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
             )
             raw = resp["message"]["content"]
             clean = re.sub(r'```json|```', '', raw).strip()
-            m = re.search(r'\{.*\}', clean, re.DOTALL)
-            if m:
-                result = json.loads(m.group())
+            result = None
+            decoder = json.JSONDecoder()
+            start = clean.find("{")
+            if start != -1:
+                try:
+                    result, _end = decoder.raw_decode(clean[start:])
+                except Exception:
+                    result = None
+            if isinstance(result, dict):
                 idx = result.get("selected_index", 0)
                 reason = result.get("reason", "")
                 if 0 <= idx < len(candidates):
@@ -316,6 +335,7 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
 
     def _score_candidate(self, category: str, path: str) -> int:
         name = Path(path).name.lower()
+        path_lower = str(path).lower()
         score = 0
 
         preferred = [k.lower() for k in self._preferred_names.get(category, [])]
@@ -325,6 +345,14 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
         for idx, key in enumerate(preferred):
             if key and key in name:
                 score += max(12 - idx, 4)
+
+        if category == "dirs":
+            if "/discovery/web-content/" in path_lower.replace("\\", "/"):
+                score += 4
+            if "directory-list" in name:
+                score += 4
+            if "raft-" in name and "directories" in name:
+                score += 3
 
         # Penalize noisy/less practical lists for this workflow.
         if any(key in name for key in avoid):
@@ -341,7 +369,15 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
         # Gentle nudge by file size to avoid massive noisy files.
         try:
             kb = Path(path).stat().st_size / 1024.0
-            if kb < 256:
+            if category == "dirs":
+                # Tiny custom lists like 5-20 lines are poor defaults for discovery.
+                if kb < 2:
+                    score -= 10
+                elif kb < 8:
+                    score -= 4
+                elif 32 <= kb <= 1024:
+                    score += 3
+            elif kb < 256:
                 score += 1
             elif kb > 4096:
                 score -= 2

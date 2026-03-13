@@ -202,6 +202,33 @@ class PentestPipeline:
         console.print(f"\n[cyan]━━ PAGE ANALYSIS ━━[/cyan]")
         high_risk_eps = sorted(enriched, key=lambda e: e.score, reverse=True)[:20]
 
+        for ep in high_risk_eps:
+            resp = self.client.get(ep.url)
+            if resp.get("status") != 200:
+                continue
+            content_type = (resp.get("headers", {}).get("content-type")
+                            or resp.get("headers", {}).get("Content-Type", "")).lower()
+            body = resp.get("body", "")
+            if "html" not in content_type and "<html" not in body[:500].lower():
+                continue
+
+            analysis = self.ai.analyze_page(
+                ep.url,
+                resp["status"],
+                body[:4000],
+                resp.get("headers", {}),
+                baseline.is_real_200(resp),
+            )
+            extra_children = analysis.get("suggested_child_paths", []) or []
+            for child in extra_children[:10]:
+                child_url = urllib.parse.urljoin(ep.url.rstrip("/") + "/", child.lstrip("/"))
+                if not child_url.startswith(target):
+                    continue
+                if child_url in crawler.visited:
+                    continue
+                crawler.visited.add(child_url)
+                enriched.append(crawler._url_to_endpoint(child_url, "GET", ep.depth + 1, "ai_page_analysis"))
+
         for aw in crawler.auth_wall_pages:
             # custom_404_branded — SPA site's soft-404 page,
             # not for BAC checking, skip it
