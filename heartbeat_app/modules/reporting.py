@@ -52,6 +52,7 @@ class Reporter:
                     f"| **Risk** | {f.risk} |",
                     f"| **Confidence** | {f.confidence}% |",
                     f"| **Confirmed** | {'✅ Yes' if f.confirmed else '⚠ Unconfirmed'} |",
+                    f"| **Verification Reason** | {self._verification_reason(f)} |",
                     "", f"**Evidence:** {f.evidence}", "",
                 ]
                 if f.request_raw:
@@ -84,6 +85,7 @@ class Reporter:
                 "risk_level": f.risk,
                 "confidence": f.confidence,
                 "confirmed": f.confirmed,
+                "verification_reason": self._verification_reason(f),
                 "description": self._vuln_description(f),
             },
             "target": {
@@ -113,6 +115,40 @@ class Reporter:
         if f.oob:
             report["exploitation"]["oob_confirmed"] = True
         return report
+
+    def _verification_reason(self, f: Finding) -> str:
+        """Human-readable reason for why a finding is confirmed or not."""
+        explicit_reason = str(getattr(f, "verification_reason", "") or "").strip()
+        if explicit_reason:
+            return explicit_reason
+
+        if f.fp_filtered:
+            return f.suppression_reason or "Filtered as false positive by verification logic."
+
+        if f.confirmed:
+            if getattr(f, "oob", False):
+                return "Out-of-band callback observed during verification."
+
+            evidence = str(f.evidence or "")
+            if "VERIFIED:" in evidence:
+                return evidence.split("VERIFIED:", 1)[1].strip()[:300] or "Verified by evidence in response comparison."
+
+            tool_output = str(f.tool_output or "")
+            if "VERIFIED:" in tool_output:
+                return tool_output.split("VERIFIED:", 1)[1].strip()[:300] or "Verified by scanner/tool output."
+
+            if f.exploit_cmd:
+                return "Exploit PoC generated and verification signal met."
+
+            return "Confirmed by automated verification heuristics and confidence threshold."
+
+        if f.suppression_reason:
+            return f.suppression_reason
+
+        if f.confidence < 70:
+            return f"Not confirmed due to low confidence ({f.confidence}%)."
+
+        return "Not confirmed: evidence did not meet verification criteria."
 
     def _vuln_description(self, f: Finding) -> str:
         """Full explanation of what the vulnerability consists of."""
@@ -224,6 +260,7 @@ class Reporter:
                 "risk": f.risk,
                 "confidence": f.confidence,
                 "reason_suppressed": f.suppression_reason or "AI FP filter",
+                "verification_reason": self._verification_reason(f),
             })
 
         findings_path = REPORT_DIR / f"findings_{safe}_{ts}.json"

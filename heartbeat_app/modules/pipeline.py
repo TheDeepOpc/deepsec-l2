@@ -343,7 +343,12 @@ class PentestPipeline:
                 bac = session_mgr.detect_bac(ep.url, ep.method)
                 if bac:
                     ai_bac = self.ai.analyze_bac(bac)
-                    if ai_bac and ai_bac.get("found") and ai_bac.get("confidence",0) >= MIN_CONFIDENCE:
+                    if (
+                        ai_bac
+                        and ai_bac.get("found")
+                        and ai_bac.get("verified", False)
+                        and ai_bac.get("confidence", 0) >= MIN_CONFIDENCE
+                    ):
                         f = Finding(
                             owasp_id=ai_bac.get("owasp_id","A01"),
                             owasp_name=ai_bac.get("owasp_name","Broken Access Control"),

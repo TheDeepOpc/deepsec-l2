@@ -171,15 +171,50 @@ Answer ONLY in JSON:
         }
 
     def analyze_bac(self, bac_data: dict) -> Optional[dict]:
+        responses = bac_data.get("responses", {}) or {}
+        anon = responses.get("anonymous", {}) or {}
+
+        # Deterministic guardrails to avoid obvious FP before AI call.
+        anon_status = anon.get("status", 0)
+        anon_body   = (anon.get("body_snippet", "") or "").lower()
+        anon_title  = (anon.get("title", "") or "").lower()
+        anon_loc    = (anon.get("redirect_location", "") or "").lower()
+        if anon_status in (401, 403):
+            return {"found": False, "verified": False, "reason": "Anonymous is blocked (401/403)."}
+        if any(x in anon_loc for x in ["/login", "/signin", "/auth"]):
+            return {"found": False, "verified": False, "reason": "Anonymous is redirected to login."}
+        login_hits = sum(1 for s in ["login", "sign in", "username", "password", "redirecting"] if s in anon_body)
+        if login_hits >= 2 or any(x in anon_title for x in ["login", "sign in", "auth"]):
+            return {"found": False, "verified": False, "reason": "Anonymous response is a login/auth page."}
+
         prompt = f"""Same endpoint requested with multiple user roles.
 URL: {bac_data['url']}, Method: {bac_data['method']}
 Role responses: {json.dumps(bac_data['responses'], indent=2)}
 Comparison signals: {json.dumps(bac_data['comparisons'], indent=2)}
 Is this BAC/IDOR?
-JSON: {{"found": true, "owasp_id": "A01", "risk": "High", "confidence": 80,
-        "title": "...", "technical": "...", "exploitable": true,
-        "exploit_cmd": "...", "remediation": "..."}}"""
-        return self._call(prompt, cache=False)
+
+STRICT RULES:
+1) If anonymous gets login page or redirect-to-login, this is NOT BAC.
+2) If authenticated user sees their own data on their own endpoint, this is NOT IDOR.
+3) Report BAC/IDOR only when unauthorized role can access protected data with clear evidence.
+4) Do not mark vulnerability based only on status=200; verify body content and access context.
+
+Return ONLY JSON:
+{{"found": false, "verified": false, "owasp_id": "A01", "risk": "High", "confidence": 0,
+  "title": "...", "technical": "...", "exploitable": false,
+  "exploit_cmd": "...", "remediation": "...", "reason": "..."}}"""
+        result = self._call(prompt, cache=False) or {}
+        if not isinstance(result, dict):
+            return {"found": False, "verified": False, "reason": "AI parse failure"}
+        if not result.get("found"):
+            result["verified"] = False
+            return result
+        # If AI says found but cannot verify, keep it as not found to avoid noisy FP.
+        if not result.get("verified", False):
+            result["found"] = False
+            result["confidence"] = min(int(result.get("confidence", 0) or 0), 40)
+            result["reason"] = result.get("reason") or "Not verified as unauthorized access"
+        return result
 
     def correlate(self, signals: list) -> list:
         if len(signals) < 2:
@@ -902,7 +937,11 @@ class FPFilter:
                 f.suppression_reason = f"Confidence dropped below threshold after FP filter: {f.confidence}% < {MIN_CONFIDENCE}%."
                 continue
 
-            if f.risk in ("Critical", "High") and not f.confirmed:
+            if f.risk in ("Critical", "High", "Medium") and not f.confirmed:
+                if self._auto_confirm_by_evidence(f):
+                    f.confirmed = True
+                    passed.append(f)
+                    continue
                 verify = self.ai.verify_finding(f, self.client)
                 f.confirmed = verify.get("confirmed", False)
                 if verify.get("evidence"):
@@ -933,12 +972,51 @@ class FPFilter:
         has_supporting_signal = bool((f.evidence or "").strip() or (f.tool_output or "").strip())
         if (f.baseline_diff == "{}" or not f.baseline_diff) and not has_supporting_signal:
             return True
+        ev = (f.evidence or "").lower()
+        # Contradiction guard: vulnerability claim but verification says login redirect.
+        if "verified:" in ev and any(
+            s in ev for s in [
+                "redirect to /login",
+                "redirected to /login",
+                "properly redirects to login",
+                "response is html redirect to /login",
+                "received: '<!doctype html>",
+            ]
+        ):
+            if not f.suppression_reason:
+                f.suppression_reason = "Verification indicates login redirect/expected auth behavior."
+            return True
         body = f.response_raw.lower()
         fp_keywords = ["access denied", "blocked by", "firewall", "captcha", "bot protection"]
         if any(k in body for k in fp_keywords) and f.confidence < 70:
             if not f.suppression_reason:
                 f.suppression_reason = "Response body matches generic blocking page."
             return True
+        return False
+
+    def _auto_confirm_by_evidence(self, f: Finding) -> bool:
+        ev = (f.evidence or "").lower()
+        out = (f.tool_output or "").lower()
+
+        # Explicit negative/redirect evidence should not be auto-confirmed.
+        if any(s in ev for s in ["redirect to /login", "redirected to /login", "properly redirects to login"]):
+            return False
+
+        # High-confidence signals from tools.
+        if f.tool in ("oob_interactsh", "recursive_403", "acl_bypass") and f.confidence >= 80:
+            return True
+        if f.tool == "nuclei" and f.risk in ("Critical", "High") and f.confidence >= 85:
+            return True
+        if f.tool in ("xxe_probe", "stored_xss", "second_order_sqli", "deser_probe") and f.confidence >= 75:
+            return True
+
+        # SQLmap direct evidence patterns.
+        if f.tool == "sqlmap" and any(s in out for s in [
+            "sql injection", "is vulnerable", "parameter", "payload",
+            "back-end dbms", "boolean-based blind", "time-based blind",
+        ]):
+            return True
+
         return False
 
 class Correlator:

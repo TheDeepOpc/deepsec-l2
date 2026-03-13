@@ -205,6 +205,7 @@ class RiskScorer:
 
         return tech
 
+@dataclass
 class RoleContext:
     name:      str
     client:    "HTTPClient"
@@ -215,11 +216,14 @@ class SessionManager:
     def __init__(self, base_client: HTTPClient, ai: "AIEngine"):
         self.base_client = base_client
         self.ai          = ai
+        # Keep anonymous role isolated from the mutable main session.
+        anonymous_session = SessionContext()
+        anonymous_client  = HTTPClient(anonymous_session, timeout=DEFAULT_TIMEOUT)
         self.roles       : dict[str, RoleContext] = {
             "anonymous": RoleContext(
                 name="anonymous",
-                client=base_client,
-                session=base_client.session,
+                client=anonymous_client,
+                session=anonymous_session,
             )
         }
 
@@ -257,13 +261,21 @@ class SessionManager:
                 r = ctx.client.get(url)
             else:
                 r = ctx.client.post(url, data=data or {})
+            body_snippet = r["body"][:300]
+            body_lower   = body_snippet.lower()
+            title        = self._extract_title(r["body"])
+            loc = (r.get("headers", {}).get("location")
+                   or r.get("headers", {}).get("Location")
+                   or "")
             results[role_name] = {
                 "status":     r["status"],
                 "size":       len(r["body"]),
-                "title":      self._extract_title(r["body"]),
+                "title":      title,
                 "body_hash":  hashlib.md5(r["body"].encode()).hexdigest(),
-                "body_snippet": r["body"][:300],
+                "body_snippet": body_snippet,
                 "has_sensitive": bool(RiskScorer.score_body(r["body"])),
+                "redirect_location": loc,
+                "is_login_page": self._looks_like_login(body_lower, title, loc),
             }
         return results
 
@@ -273,6 +285,16 @@ class SessionManager:
         responses  = self.compare_endpoint(url, method, data)
         role_list  = list(responses.items())
         comparisons = []
+        anonymous_resp = responses.get("anonymous")
+
+        # If anonymous role is blocked or redirected to login, this endpoint is
+        # behaving as expected for anonymous access.
+        if anonymous_resp:
+            if anonymous_resp["status"] in (401, 403):
+                return None
+            if anonymous_resp.get("is_login_page"):
+                return None
+
         for i in range(len(role_list)):
             for j in range(i+1, len(role_list)):
                 r1_name, r1 = role_list[i]
@@ -283,23 +305,54 @@ class SessionManager:
                 same_size  = abs(r1["size"] - r2["size"]) < 50
                 both_200   = r1["status"] == 200 and r2["status"] == 200
                 diff_roles = r1_name != r2_name
-                if both_200 and (same_hash or same_size) and diff_roles:
-                    comparisons.append({
-                        "role_a": r1_name, "role_b": r2_name,
-                        "signal": "same_response_different_roles",
-                        "size_a": r1["size"], "size_b": r2["size"],
-                        "status_a": r1["status"], "status_b": r2["status"],
-                    })
+
                 if r1_name == "anonymous" and r2_name != "anonymous":
-                    if r1["status"] == 200 and r2["status"] == 200:
+                    if (
+                        r1["status"] == 200 and r2["status"] == 200
+                        and not r1.get("is_login_page")
+                        and (r1.get("has_sensitive") or same_hash or same_size)
+                    ):
                         comparisons.append({
                             "role_a": "anonymous", "role_b": r2_name,
                             "signal": "anonymous_access_to_auth_endpoint",
                             "status_a": r1["status"], "status_b": r2["status"],
+                            "same_hash": same_hash,
+                            "same_size": same_size,
+                            "anon_sensitive": r1.get("has_sensitive", False),
+                        })
+
+                # Optional: detect low-privilege user seeing admin-equivalent content.
+                if (
+                    both_200 and diff_roles
+                    and r1_name != "anonymous" and r2_name != "anonymous"
+                    and ("/admin" in url.lower() or "admin" in urllib.parse.urlparse(url).path.lower())
+                    and (same_hash or same_size)
+                    and (r1.get("has_sensitive") or r2.get("has_sensitive"))
+                ):
+                    comparisons.append({
+                        "role_a": r1_name, "role_b": r2_name,
+                        "signal": "same_admin_response_different_authenticated_roles",
+                        "status_a": r1["status"], "status_b": r2["status"],
+                        "same_hash": same_hash,
+                        "same_size": same_size,
                         })
         if comparisons:
             return {"url": url, "method": method, "responses": responses, "comparisons": comparisons}
         return None
+
+    def _looks_like_login(self, body_lower: str, title: str, location: str) -> bool:
+        title_lower = (title or "").lower()
+        loc_lower   = (location or "").lower()
+        login_signals = [
+            "login", "sign in", "log in", "username", "password",
+            "please log in", "authentication required", "redirecting",
+        ]
+        body_hits = sum(1 for s in login_signals if s in body_lower)
+        return (
+            body_hits >= 2
+            or any(x in title_lower for x in ["login", "sign in", "auth"])
+            or any(x in loc_lower for x in ["/login", "/signin", "/auth"])
+        )
 
     def _do_login(self, client: HTTPClient, login_url: str,
                   username: str, password: str) -> bool:

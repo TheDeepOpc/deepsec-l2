@@ -737,12 +737,25 @@ class MitmProxyInterceptor:
         ]
         csrf_token = ""
         csrf_field = ""
+        discovered_csrf_fields = [
+            k for k in ep.params.keys()
+            if any(t in k.lower() for t in [
+                "csrf", "_token", "csrfmiddlewaretoken",
+                "authenticity_token", "__requestverificationtoken",
+            ])
+        ]
         for pat in csrf_patterns:
             m = re.search(pat, body, re.I)
             if m:
                 csrf_token = m.group(1)
                 csrf_field = re.search(r'name=["\']?(\w+)', pat).group(1) if "name=" in pat else "csrf_token"
                 break
+
+        # If parameter discovery already found CSRF-related fields,
+        # don't raise "missing CSRF" based only on current response body.
+        if not csrf_token and discovered_csrf_fields:
+            csrf_token = "DISCOVERED_IN_FORM_FIELDS"
+            csrf_field = discovered_csrf_fields[0].split(":")[-1]
 
         if not csrf_token:
             # POST endpoint without CSRF token — potential CSRF
@@ -783,7 +796,19 @@ class MitmProxyInterceptor:
             "csrf", "token", "forbidden", "invalid request", "security error",
             "verification failed", "access denied",
         ])
-        if resp_no_csrf.get("status") in (200, 201, 302) and not csrf_rejected:
+        likely_success = any(k in no_csrf_body for k in [
+            "success", "completed", "updated", "created", "saved",
+            "transaction successful", "done",
+        ])
+        likely_auth_redirect = (
+            "redirecting" in no_csrf_body and "login" in no_csrf_body
+        )
+        if (
+            resp_no_csrf.get("status") in (200, 201)
+            and not csrf_rejected
+            and likely_success
+            and not likely_auth_redirect
+        ):
             with self._lock:
                 self.findings.append(Finding(
                     owasp_id="A01", owasp_name="Broken Access Control",
@@ -813,7 +838,19 @@ class MitmProxyInterceptor:
             "csrf", "token", "forbidden", "invalid request", "security error",
             "verification failed", "access denied",
         ])
-        if resp_bad.get("status") in (200, 201, 302) and not bad_rejected:
+        likely_bad_success = any(k in bad_body for k in [
+            "success", "completed", "updated", "created", "saved",
+            "transaction successful", "done",
+        ])
+        likely_bad_auth_redirect = (
+            "redirecting" in bad_body and "login" in bad_body
+        )
+        if (
+            resp_bad.get("status") in (200, 201)
+            and not bad_rejected
+            and likely_bad_success
+            and not likely_bad_auth_redirect
+        ):
             with self._lock:
                 self.findings.append(Finding(
                     owasp_id="A01", owasp_name="Broken Access Control",

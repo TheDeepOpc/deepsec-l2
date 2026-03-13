@@ -441,8 +441,22 @@ class OWASPFuzzEngine:
         tool_out = {"tool": tool_name, "output": "", "available": True}
 
         if tool_name == "sqlmap" and check_id == "A03_sqli":
-            data = urllib.parse.urlencode(ep.params) if ep.method == "POST" else ""
-            tool_out = self.kali.sqlmap(ep.url, param_key, ep.method, data)
+            clean_params = {
+                k.split(":")[-1]: v
+                for k, v in ep.params.items()
+                if not k.startswith("header:") and not k.startswith("path:")
+            }
+            if ep.method == "POST":
+                data = urllib.parse.urlencode(clean_params) if clean_params else ""
+                tool_out = self.kali.sqlmap(ep.url, param_key, ep.method, data)
+            else:
+                pname = param_key.split(":")[-1]
+                parsed = urllib.parse.urlparse(ep.url)
+                qs = dict(urllib.parse.parse_qsl(parsed.query))
+                if pname and pname not in qs:
+                    qs[pname] = str(clean_params.get(pname, "1"))
+                target_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
+                tool_out = self.kali.sqlmap(target_url, param_key, "GET", "")
 
         elif tool_name == "dalfox" and check_id == "A03_xss":
             data = urllib.parse.urlencode(ep.params) if ep.method == "POST" else ""
