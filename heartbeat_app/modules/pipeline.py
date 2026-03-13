@@ -11,12 +11,14 @@ class PentestPipeline:
         # V7 MEGA — new components
         self.oob     = OOBClient()
         self.ctf     = getattr(args, "ctf", False)
+        self._last_target = (getattr(args, "target", "") or "").rstrip("/")
+        self._partial_findings = []
 
     def run(self):
         raw_input = self.args.target.rstrip("/")
 
         console.print(BANNER)
-        _print_tools_status()
+        print_tools_status()
         console.print(f"\n[bold]Target input:[/bold] {raw_input}")
         console.print(f"[bold]Mode:[/bold]   {self.args.mode}")
         console.print(f"[bold]Deep:[/bold]   {self.args.deep}")
@@ -40,6 +42,7 @@ class PentestPipeline:
         if recon_result.http_targets:
             primary = recon_result.http_targets[0]
             target  = primary["url"].rstrip("/")
+            self._last_target = target
             console.print(f"  [bold green]Primary target: {target}[/bold green]"
                           + (f"  [dim]({primary.get('ai_reason','')})[/dim]"
                              if primary.get("ai_reason") else ""))
@@ -48,6 +51,7 @@ class PentestPipeline:
             target = raw_input
             if not target.startswith("http"):
                 target = "http://" + target
+            self._last_target = target
             console.print(f"  [dim yellow]  Recon found no HTTP targets — using {target}[/dim yellow]")
 
         # WAF warning
@@ -544,6 +548,7 @@ class PentestPipeline:
         console.print(f"\n[cyan]━━ CORRELATOR ━━[/cyan]")
         correlator   = Correlator(self.ai)
         all_findings = correlator.correlate(all_findings, fuzzer.signals)
+        self._partial_findings = list(all_findings)
 
         # Step 9b: Confidence threshold enforcement (global gate)
         pre_conf_count = len(all_findings)
@@ -556,6 +561,7 @@ class PentestPipeline:
         console.print(f"\n[cyan]━━ FP FILTER ━━[/cyan]")
         fp_filter = FPFilter(self.ai, self.client)
         clean     = fp_filter.filter(all_findings)
+        self._partial_findings = list(clean)
         console.print(f"[green]✓ {len(clean)} findings kept, "
                       f"{len(all_findings)-len(clean)} FPs removed[/green]")
 
@@ -579,6 +585,18 @@ class PentestPipeline:
         self._ai_final_assessment(clean, all_findings, target, site_tech)
 
         return clean
+
+    def save_partial_results(self, reason: str = "interrupted"):
+        """Best-effort partial report save used by runtime on interrupts/exceptions."""
+        try:
+            target = self._last_target or (getattr(self.args, "target", "") or "unknown_target")
+            reporter = Reporter(target, self.graph)
+            path = reporter.save(self._partial_findings)
+            console.print(f"[yellow]Partial results saved ({reason}) -> {path}[/yellow]")
+            return path
+        except Exception as exc:
+            console.print(f"[bold red]Could not save partial results ({reason}): {exc}[/bold red]")
+            return None
 
 
     def _ctf_chain(self, finding: Finding, target: str, tech: dict):
