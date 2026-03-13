@@ -550,6 +550,9 @@ class OWASPFuzzEngine:
             return None
 
         resp_for_ai = best_resp or {}
+        if self._is_validation_only_injection_fp(check_id, best_diff, resp_for_ai):
+            return None
+
         context = {
             "url":             ep.url,
             "method":          ep.method,
@@ -1311,6 +1314,33 @@ class OWASPFuzzEngine:
         if any(token in name for token in numeric_tokens):
             return True
         return bool(value_s) and bool(re.fullmatch(r"-?\d+(?:\.\d+)?", value_s))
+
+    def _is_validation_only_injection_fp(self, check_id: str, diff: dict, resp: dict) -> bool:
+        if check_id not in ("A03_sqli", "A03_cmdi"):
+            return False
+        new_errors = " ".join(str(x) for x in diff.get("new_errors", []))
+        body = (resp.get("body", "") or "")[:2000]
+        combined = f"{new_errors}\n{body}".lower()
+
+        validation_markers = [
+            "invalid literal for int",
+            "could not convert string to float",
+            "valueerror",
+            "typeerror",
+        ]
+        if not any(m in combined for m in validation_markers):
+            return False
+
+        db_markers = [
+            "sql syntax",
+            "mysql",
+            "postgres",
+            "sqlite",
+            "ora-",
+            "odbc",
+            "database error",
+        ]
+        return not any(m in combined for m in db_markers)
 
     def _diff_is_interesting(self, diff: dict) -> bool:
         return (

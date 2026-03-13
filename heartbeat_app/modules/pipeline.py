@@ -200,16 +200,33 @@ class PentestPipeline:
 
         # Step 5: Page analysis
         console.print(f"\n[cyan]━━ PAGE ANALYSIS ━━[/cyan]")
-        high_risk_eps = sorted(enriched, key=lambda e: e.score, reverse=True)[:20]
+        page_candidates = sorted(enriched, key=lambda e: e.score, reverse=True)
+        analyzed_count = 0
+        skipped_non_200 = 0
+        skipped_non_html = 0
+        forced_search_urls = set()
 
-        for ep in high_risk_eps:
+        def _extract_search_params(html: str) -> list[str]:
+            names = []
+            for m in re.finditer(r'<input[^>]+name=["\']([^"\']+)["\'][^>]*>', html, re.I):
+                n = (m.group(1) or "").strip()
+                if not n:
+                    continue
+                nl = n.lower()
+                if any(k in nl for k in ("q", "query", "search", "keyword", "filter")):
+                    names.append(n)
+            return list(dict.fromkeys(names))[:8]
+
+        for ep in page_candidates:
             resp = self.client.get(ep.url)
             if resp.get("status") != 200:
+                skipped_non_200 += 1
                 continue
             content_type = (resp.get("headers", {}).get("content-type")
                             or resp.get("headers", {}).get("Content-Type", "")).lower()
             body = resp.get("body", "")
             if "html" not in content_type and "<html" not in body[:500].lower():
+                skipped_non_html += 1
                 continue
 
             analysis = self.ai.analyze_page(
@@ -219,6 +236,30 @@ class PentestPipeline:
                 resp.get("headers", {}),
                 baseline.is_real_200(resp),
             )
+            analyzed_count += 1
+
+            # If page analysis points to risky page types, increase test priority.
+            if analysis.get("risk") in ("Critical", "High"):
+                ep.score += 25
+
+            # Search-like inputs should always be tested, regardless of planner order.
+            search_inputs = _extract_search_params(body)
+            if any(x in ep.url.lower() for x in ("search", "query", "find")) and not search_inputs:
+                search_inputs = ["query"]
+            for inp in search_inputs:
+                key = f"query:{inp}"
+                if key not in ep.params:
+                    ep.params[key] = "test"
+            if search_inputs:
+                forced_search_urls.add(f"{ep.method}:{ep.url}")
+                ep.score += 35
+
+            page_type = analysis.get("page_type", "unknown")
+            console.print(
+                f"  [dim]AI page: {ep.url[:70]}  type={page_type} "
+                f"risk={analysis.get('risk','Info')} search_inputs={len(search_inputs)}[/dim]"
+            )
+
             extra_children = analysis.get("suggested_child_paths", []) or []
             for child in extra_children[:10]:
                 child_url = urllib.parse.urljoin(ep.url.rstrip("/") + "/", child.lstrip("/"))
@@ -228,6 +269,11 @@ class PentestPipeline:
                     continue
                 crawler.visited.add(child_url)
                 enriched.append(crawler._url_to_endpoint(child_url, "GET", ep.depth + 1, "ai_page_analysis"))
+
+        console.print(
+            f"[green]✓ Page analysis: analyzed {analyzed_count} HTML pages, "
+            f"skipped_non_200={skipped_non_200}, skipped_non_html={skipped_non_html}[/green]"
+        )
 
         for aw in crawler.auth_wall_pages:
             # custom_404_branded — SPA site's soft-404 page,
@@ -345,16 +391,9 @@ class PentestPipeline:
                     "confidence":   confidence,
                 })
 
-        for ep in high_risk_eps:
-            r      = self.client.get(ep.url)
-            is_200 = baseline.is_real_200(r)
-            if r["status"] in (200, 403, 404):
-                analysis = self.ai.analyze_page(ep.url, r["status"], r["body"], r["headers"], is_200)
-                if analysis.get("is_custom_404") and not analysis.get("is_auth_wall"):
-                    ep.score = 0
-                    continue
-                if analysis.get("risk") in ("Critical", "High"):
-                    ep.score += 25
+        for ep in page_candidates:
+            if ep.score < 0:
+                ep.score = 0
 
         # Step 5b: ACL bypass findings — only AI-confirmed bypasses
         acl_findings = []
@@ -428,6 +467,21 @@ class PentestPipeline:
         # Step 7: AI planner
         console.print(f"\n[cyan]━━ AI PLANNER ━━[/cyan]")
         planned = self.ai.plan_endpoints(enriched)
+
+        # Force-test search endpoints before generic planner order.
+        forced_eps = [ep for ep in enriched if f"{ep.method}:{ep.url}" in forced_search_urls]
+        if forced_eps:
+            seen = set()
+            ordered = []
+            for ep in forced_eps + planned:
+                key = (ep.method, ep.url)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ordered.append(ep)
+            planned = ordered
+            console.print(f"[green]✓ Forced AI search/input tests: {len(forced_eps)} endpoint(s)[/green]")
+
         console.print(f"[green]✓ AI prioritized {len(planned)} endpoints[/green]")
 
         # Step 8: OWASP Fuzzing (with site_tech)

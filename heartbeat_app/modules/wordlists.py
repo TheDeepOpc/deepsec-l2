@@ -133,7 +133,7 @@ class WordlistScanner:
                 name_lower = fpath.name.lower()
                 path_lower = str(fpath).lower()
                 for cat, keywords in cls.CATEGORY_KEYWORDS.items():
-                    if any(kw in name_lower or kw in path_lower for kw in keywords):
+                    if any(cls._keyword_match(name_lower, path_lower, kw) for kw in keywords):
                         catalog[cat].append(str(fpath))
                         break  # one file per category
 
@@ -143,6 +143,17 @@ class WordlistScanner:
                               if Path(p).exists() else 0)
 
         return catalog
+
+    @staticmethod
+    def _keyword_match(name_lower: str, path_lower: str, keyword: str) -> bool:
+        """Short keywords (e.g., lfi) should match as token, not inside random words (e.g., dolfin)."""
+        kw = (keyword or "").lower()
+        if not kw:
+            return False
+        if len(kw) <= 3:
+            pat = rf"(^|[^a-z0-9]){re.escape(kw)}([^a-z0-9]|$)"
+            return bool(re.search(pat, name_lower)) or bool(re.search(pat, path_lower))
+        return kw in name_lower or kw in path_lower
 
     @classmethod
     def best(cls, category: str) -> Optional[str]:
@@ -206,6 +217,11 @@ class AIWordlistSelector:
             "lfi": ["jhaddix"],
             "dirs": ["common_directories"],
         }
+        # Hard blacklist: never select these lists.
+        self._hard_block_names: dict[str, list[str]] = {
+            "dirs": ["common_directories"],
+            "lfi": ["dolfin", "jhaddix"],
+        }
 
     def select(self, category: str, context: dict) -> str:
         """
@@ -229,12 +245,13 @@ class AIWordlistSelector:
         cache_key = f"{category}:{ctx_hash}"
         if cache_key in self._cache:
             cached = self._cache[cache_key]
-            if Path(cached).exists():
+            if Path(cached).exists() and not self._is_hard_blocked(category, cached):
                 return cached
 
         # Get available system wordlists
         catalog = WordlistScanner.get_catalog()
         candidates = catalog.get(category, [])
+        candidates = self._filter_candidates(category, candidates)
 
         if not candidates:
             # No wordlists for this category — fallback
@@ -256,7 +273,7 @@ class AIWordlistSelector:
         # Otherwise AI can tie-break only among top ranked candidates.
         selected = self._ask_ai(category, ranked[:8], context)
 
-        if selected and Path(selected).exists():
+        if selected and Path(selected).exists() and not self._is_hard_blocked(category, selected):
             self._cache[cache_key] = selected
             console.print(f"  [dim cyan]AI wordlist: {Path(selected).name} "
                           f"({category})[/dim cyan]")
@@ -264,11 +281,30 @@ class AIWordlistSelector:
 
         # AI couldn't select — use first available file
         for p in ranked:
-            if Path(p).exists():
+            if Path(p).exists() and not self._is_hard_blocked(category, p):
                 self._cache[cache_key] = p
                 return p
 
         return self._make_fallback(category)
+
+    def _filter_candidates(self, category: str, candidates: list[str]) -> list[str]:
+        blocked = [k.lower() for k in self._hard_block_names.get(category, [])]
+        if not blocked:
+            return candidates
+        filtered = []
+        for p in candidates:
+            name = Path(p).name.lower()
+            if any(b in name for b in blocked):
+                continue
+            filtered.append(p)
+        return filtered
+
+    def _is_hard_blocked(self, category: str, path: str) -> bool:
+        blocked = [k.lower() for k in self._hard_block_names.get(category, [])]
+        if not blocked:
+            return False
+        name = Path(path).name.lower()
+        return any(b in name for b in blocked)
 
     def _ask_ai(self, category: str, candidates: list[str],
                 context: dict) -> Optional[str]:
