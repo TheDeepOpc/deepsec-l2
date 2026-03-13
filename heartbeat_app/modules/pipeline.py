@@ -66,12 +66,20 @@ class PentestPipeline:
         if self.args.auth_url:
             login_url = urllib.parse.urljoin(target + "/", self.args.auth_url.lstrip("/"))
             console.print(f"[cyan]━━ SESSION SETUP ━━[/cyan]")
+            active_role = ""
             if self.args.user and self.args.password:
-                session_mgr.add_role("user", login_url, self.args.user, self.args.password)
-                self.graph.roles.append("user")
+                if session_mgr.add_role("user", login_url, self.args.user, self.args.password):
+                    self.graph.roles.append("user")
+                    active_role = "user"
             if self.args.admin_user and self.args.admin_pass:
-                session_mgr.add_role("admin", login_url, self.args.admin_user, self.args.admin_pass)
-                self.graph.roles.append("admin")
+                if session_mgr.add_role("admin", login_url, self.args.admin_user, self.args.admin_pass):
+                    self.graph.roles.append("admin")
+                    if not active_role:
+                        active_role = "admin"
+
+            # Ensure crawler/fuzzer use authenticated session when available.
+            if active_role and session_mgr.activate_role(active_role):
+                console.print(f"[green]✓ Active scan session switched to role '{active_role}'[/green]")
 
         # Step 1b: OAuth/SAML/CSRF detection on login page
         oauth_saml_findings = []
@@ -909,15 +917,16 @@ Return as plain text (NOT JSON). Write detailed, professional analysis."""
             # so we call Ollama API directly
             assessment_text = ""
             if HAS_OLLAMA:
-                _client = _ollama.Client(host=OLLAMA_HOST)
-                resp = _client.chat(
-                    model=MODEL_NAME,
-                    messages=[
-                        {"role": "system", "content": "You are a senior penetration testing expert. Write detailed security assessments."},
-                        {"role": "user", "content": prompt},
-                    ],
-                )
-                assessment_text = resp["message"]["content"].strip()
+                _client = create_ollama_client()
+                if _client is not None:
+                    resp = _client.chat(
+                        model=MODEL_NAME,
+                        messages=[
+                            {"role": "system", "content": "You are a senior penetration testing expert. Write detailed security assessments."},
+                            {"role": "user", "content": prompt},
+                        ],
+                    )
+                    assessment_text = resp["message"]["content"].strip()
             else:
                 # Ollama unavailable, AI _call tries to return dict
                 result = self.ai._call(prompt, cache=False)

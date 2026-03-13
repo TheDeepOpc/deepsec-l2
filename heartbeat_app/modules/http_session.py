@@ -239,6 +239,22 @@ class SessionManager:
             console.print(f"[green]✓ Role '{name}' logged in as {username}[/green]")
         return success
 
+    def activate_role(self, name: str) -> bool:
+        """Apply role session to shared pipeline client for authenticated crawl/fuzz."""
+        ctx = self.roles.get(name)
+        if not ctx or not ctx.logged_in:
+            return False
+
+        base_sess = self.base_client.session
+        role_sess = ctx.session
+        base_sess.cookies = dict(role_sess.cookies)
+        base_sess.headers = dict(role_sess.headers)
+        base_sess.jwt_token = role_sess.jwt_token
+        base_sess.csrf_token = role_sess.csrf_token
+        base_sess.role = name
+        base_sess.logged_in = True
+        return True
+
     def add_role_by_cookies(self, name: str, cookies: dict, headers: dict = None, jwt: str = ""):
         new_session = SessionContext(
             cookies=cookies,
@@ -411,11 +427,13 @@ class Crawler:
         self._lock          = threading.Lock()
         self._q             : queue.Queue    = queue.Queue()
         self._scorer        = RiskScorer()
+        self._max_depth     = MAX_CRAWL_DEPTH
         # Store site technology (for wordlist selection)
         self.site_tech      : dict           = {}
 
     def crawl(self, max_depth: int = MAX_CRAWL_DEPTH) -> list[Endpoint]:
         console.print(f"\n[bold cyan]━━ CRAWLER STARTED ━━[/bold cyan]")
+        self._max_depth = max_depth
         self._probe_well_known()
         self._q.put((self.base, 0))
         threads = []
@@ -737,7 +755,7 @@ class Crawler:
         with self._lock:
             self.endpoints.append(ep)
 
-        if depth >= MAX_CRAWL_DEPTH:
+        if depth >= self._max_depth:
             return
 
         for link in self._extract_links(body, url):

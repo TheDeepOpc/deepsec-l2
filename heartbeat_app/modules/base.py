@@ -21,4 +21,16 @@ def print_tools_status() -> None:
 		color = "green" if state == "installed" else "yellow"
 		out.print(f"  [{color}]• {tool}: {state}[/{color}]")
 
+
+def create_ollama_client():
+	"""Return an Ollama client instance if available, otherwise None."""
+	lib = getattr(_engine, "_ollama", None) or getattr(_engine, "ollama", None)
+	if lib is None:
+		return None
+	try:
+		host = getattr(_engine, "OLLAMA_HOST", "http://127.0.0.1:11434")
+		return lib.Client(host=host)
+	except Exception:
+		return None
+
 __all__ = [name for name in globals() if not name.startswith("_")]

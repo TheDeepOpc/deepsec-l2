@@ -49,7 +49,9 @@ class AIEngine:
         if cache and key in self._cache:
             return self._cache[key]
         try:
-            _client = _ollama.Client(host=OLLAMA_HOST)
+            _client = create_ollama_client()
+            if _client is None:
+                return None
             resp = _client.chat(
                 model=MODEL_NAME,
                 messages=[
