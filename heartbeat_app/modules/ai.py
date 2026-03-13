@@ -42,6 +42,22 @@ class AIEngine:
                 result[key] = result[key][:500]
         return result
 
+    def _extract_json_payload(self, text: str):
+        """Parse first valid JSON object/array from mixed model output."""
+        if not text:
+            return None
+        decoder = json.JSONDecoder()
+        for ch in ("{", "["):
+            start = text.find(ch)
+            if start == -1:
+                continue
+            try:
+                obj, _end = decoder.raw_decode(text[start:])
+                return obj
+            except Exception:
+                continue
+        return None
+
     def _call(self, prompt: str, cache: bool = True) -> Optional[dict]:
         if not HAS_OLLAMA:
             return None
@@ -61,13 +77,17 @@ class AIEngine:
             )
             raw   = resp["message"]["content"]
             clean = re.sub(r'```json|```', '', raw).strip()
-            m     = re.search(r'\{.*\}', clean, re.DOTALL)
-            if m:
-                result = json.loads(m.group())
-                result = self._validate_ai_output(result)
+            parsed = self._extract_json_payload(clean)
+            if isinstance(parsed, dict):
+                result = self._validate_ai_output(parsed)
                 if cache:
                     self._cache[key] = result
                 return result
+            if isinstance(parsed, list):
+                # Keep compatibility for callers that can handle list payloads.
+                if cache:
+                    self._cache[key] = {"findings": parsed}
+                return {"findings": parsed}
         except Exception as e:
             console.print(f"[dim red]AI error: {e}[/dim red]")
         return None
@@ -229,7 +249,8 @@ Return JSON array: [{{"owasp_id":"A01","title":"...","risk":"High","confidence":
         if isinstance(result, list):
             return result
         if isinstance(result, dict) and "findings" in result:
-            return result["findings"]
+            findings = result["findings"]
+            return findings if isinstance(findings, list) else []
         return []
 
     def analyze_403_response(self, parent_url: str, child_url: str,
