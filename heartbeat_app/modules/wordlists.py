@@ -59,8 +59,8 @@ class WordlistScanner:
         "dirs": [
             "directory-list-2.3-medium",
             "directory-list-2.3-small",
-            "common",
-            "big",
+            "raft-medium-directories",
+            "raft-small-directories",
             "directory-list",
         ],
         "params": [
@@ -215,12 +215,7 @@ class AIWordlistSelector:
         # Explicitly de-prioritize niche/overly noisy lists.
         self._avoid_names: dict[str, list[str]] = {
             "lfi": ["jhaddix"],
-            "dirs": ["common_directories"],
-        }
-        # Hard blacklist: never select these lists.
-        self._hard_block_names: dict[str, list[str]] = {
-            "dirs": ["common_directories", "common-directories", "quickhits", "tiny"],
-            "lfi": ["dolfin", "jhaddix"],
+            "dirs": [],
         }
 
     def select(self, category: str, context: dict) -> str:
@@ -245,7 +240,7 @@ class AIWordlistSelector:
         cache_key = f"{category}:{ctx_hash}"
         if cache_key in self._cache:
             cached = self._cache[cache_key]
-            if Path(cached).exists() and not self._is_hard_blocked(category, cached):
+            if Path(cached).exists():
                 return cached
 
         # Get available system wordlists
@@ -271,35 +266,44 @@ class AIWordlistSelector:
             return ranked[0]
 
         # Otherwise AI can tie-break only among top ranked candidates.
-        selected = self._ask_ai(category, ranked[:8], context)
+        selected, ai_reason = self._ask_ai(category, ranked[:8], context)
 
-        if selected and Path(selected).exists() and not self._is_hard_blocked(category, selected):
+        if selected and Path(selected).exists():
             self._cache[cache_key] = selected
+            if ai_reason:
+                console.print(f"  [dim]AI tie-break reason: {ai_reason[:120]}[/dim]")
             console.print(f"  [dim cyan]AI wordlist: {Path(selected).name} "
                           f"({category})[/dim cyan]")
             return selected
 
         # AI couldn't select — use first available file
         for p in ranked:
-            if Path(p).exists() and not self._is_hard_blocked(category, p):
+            if Path(p).exists():
                 self._cache[cache_key] = p
                 return p
 
         return self._make_fallback(category)
 
     def _filter_candidates(self, category: str, candidates: list[str]) -> list[str]:
-        blocked = [k.lower() for k in self._hard_block_names.get(category, [])]
-        if not blocked:
-            blocked = []
         filtered = []
         for p in candidates:
             name = Path(p).name.lower()
-            if any(b in name for b in blocked):
+            if category == "dirs" and not self._is_high_quality_dirs_wordlist(name):
                 continue
             if category == "dirs" and self._is_too_small_dir_wordlist(p):
                 continue
             filtered.append(p)
         return filtered
+
+    def _is_high_quality_dirs_wordlist(self, name: str) -> bool:
+        # Allow only proven directory discovery naming families.
+        if "directory-list" in name:
+            return True
+        if "raft-" in name and "directories" in name:
+            return True
+        if name == "common.txt":
+            return True
+        return False
 
     def _is_too_small_dir_wordlist(self, path: str) -> bool:
         """Reject tiny dir lists that produce poor coverage/noisy scans."""
@@ -324,18 +328,11 @@ class AIWordlistSelector:
         except Exception:
             return False
 
-    def _is_hard_blocked(self, category: str, path: str) -> bool:
-        blocked = [k.lower() for k in self._hard_block_names.get(category, [])]
-        if not blocked:
-            return False
-        name = Path(path).name.lower()
-        return any(b in name for b in blocked)
-
     def _ask_ai(self, category: str, candidates: list[str],
-                context: dict) -> Optional[str]:
+                context: dict) -> tuple[Optional[str], str]:
         """Give AI the candidate list and ask for the best match."""
         if not HAS_OLLAMA:
-            return None
+            return None, ""
 
         # Shorten file names (AI doesn't need full paths)
         candidate_names = [
@@ -365,7 +362,7 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
         try:
             _client = create_ollama_client()
             if _client is None:
-                return None
+                return None, ""
             resp = _client.chat(
                 model=MODEL_NAME,
                 messages=[{"role": "user", "content": prompt}],
@@ -384,12 +381,10 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
                 idx = result.get("selected_index", 0)
                 reason = result.get("reason", "")
                 if 0 <= idx < len(candidates):
-                    console.print(f"  [dim]AI chose wordlist[{idx}]: "
-                                  f"{Path(candidates[idx]).name} — {reason[:60]}[/dim]")
-                    return candidates[idx]
+                    return candidates[idx], str(reason)
         except Exception as e:
             console.print(f"[dim red]AIWordlistSelector error: {e}[/dim red]")
-        return None
+        return None, ""
 
     def _rank_candidates(self, category: str, candidates: list[str]) -> list[str]:
         return sorted(candidates, key=lambda p: self._score_candidate(category, p), reverse=True)

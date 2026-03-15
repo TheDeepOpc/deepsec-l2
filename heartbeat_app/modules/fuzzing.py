@@ -608,11 +608,11 @@ class OWASPFuzzEngine:
             method       = ep.method,
             param        = param_key,
             payload      = best_payload,
-            evidence     = ai_result.get("evidence", "") or tool_out.get("output", "")[:220],
+            evidence     = ai_result.get("evidence", "") or tool_out.get("output", ""),
             baseline_diff= diff_str,
-            tool_output  = tool_out.get("output", "")[:500],
+            tool_output  = tool_out.get("output", ""),
             request_raw  = self._build_request_str(ep, param_key, best_payload),
-            response_raw = (self._safe_body_text(resp_for_ai)[:600] if resp_for_ai else ""),
+            response_raw = (self._safe_body_text(resp_for_ai) if resp_for_ai else ""),
             exploit_cmd  = ai_result.get("exploit_cmd", ""),
             remediation  = ai_result.get("remediation", ""),
         )
@@ -1241,13 +1241,47 @@ class OWASPFuzzEngine:
         for k in ep.params:
             prefix = k.split(":")[0]
             if prefix in param_types or any(t in prefix for t in param_types):
-                if self._is_param_relevant_for_check(check_id, k, ep.params.get(k)):
+                if self._is_param_relevant_for_check(check_id, k, ep.params.get(k), ep):
                     relevant.append(k)
         for k in ep.params:
             if ":" not in k:
-                if self._is_param_relevant_for_check(check_id, k, ep.params.get(k)):
+                if self._is_param_relevant_for_check(check_id, k, ep.params.get(k), ep):
                     relevant.append(k)
+
+        # If crawler didn't discover params, synthesize a small fallback set
+        # so injection checks still run on likely endpoints.
+        if not relevant:
+            relevant.extend(self._fallback_param_keys(ep, check_id))
         return list(dict.fromkeys(relevant))
+
+    def _fallback_param_keys(self, ep: Endpoint, check_id: str) -> list[str]:
+        path = urllib.parse.urlparse(ep.url).path.lower()
+        candidates = []
+
+        common_query = ["q", "query", "search", "id", "user_id"]
+        transfer_like = ["from_account", "to_account", "amount", "account", "receiver", "sender"]
+        auth_like = ["username", "email", "password", "token"]
+
+        if check_id in ("A03_sqli", "A03_xss", "A03_cmdi", "A03_ssti", "A10_ssrf", "A03_lfi"):
+            candidates.extend(common_query)
+
+        if any(x in path for x in ("transfer", "transaction", "payment")):
+            candidates.extend(transfer_like)
+        if any(x in path for x in ("login", "signin", "auth", "password", "register")):
+            candidates.extend(auth_like)
+        if any(x in path for x in ("file", "download", "template", "view", "include")):
+            candidates.extend(["file", "path", "template", "view"])
+        if any(x in path for x in ("fetch", "callback", "redirect", "url", "proxy")):
+            candidates.extend(["url", "redirect", "next", "callback", "target"])
+
+        prefix = "query" if ep.method == "GET" else ("json" if ep.body_type == "json" else "form")
+        out = []
+        for name in dict.fromkeys(candidates):
+            key = f"{prefix}:{name}"
+            if self._is_param_relevant_for_check(check_id, key, "", ep):
+                out.append(key)
+
+        return out[:12]
 
     def _get_quick_payloads(self, check_id: str, param_key: str = "", ep: Optional[Endpoint] = None) -> list:
         """
@@ -1259,7 +1293,11 @@ class OWASPFuzzEngine:
         if ep is not None and param_key:
             param_value = str(ep.params.get(param_key, "") or "")
 
-        if check_id == "A03_sqli" and self._is_strict_numeric_param(param_name, param_value):
+        if (
+            check_id == "A03_sqli"
+            and self._is_strict_numeric_param(param_name, param_value)
+            and not self._allow_numeric_sqli_param(param_name, ep)
+        ):
             return []
         if check_id == "A03_lfi" and not self._looks_file_like_param(param_name):
             return []
@@ -1279,7 +1317,13 @@ class OWASPFuzzEngine:
             "A08_deser": self.DESER_QUICK_PHP,
         }.get(check_id, ["test", "1", "'", "<"])
 
-    def _is_param_relevant_for_check(self, check_id: str, param_key: str, value: Any) -> bool:
+    def _is_param_relevant_for_check(
+        self,
+        check_id: str,
+        param_key: str,
+        value: Any,
+        ep: Optional[Endpoint] = None,
+    ) -> bool:
         name = param_key.split(":")[-1].lower()
         if not check_id:
             return True
@@ -1292,7 +1336,7 @@ class OWASPFuzzEngine:
         if check_id == "A03_ssti":
             return not self._is_strict_numeric_param(name, value) and not self._looks_password_change_param(name)
         if check_id == "A03_sqli":
-            if self._is_strict_numeric_param(name, value):
+            if self._is_strict_numeric_param(name, value) and not self._allow_numeric_sqli_param(name, ep):
                 return False
             return not self._looks_password_change_param(name)
         return True
@@ -1317,6 +1361,21 @@ class OWASPFuzzEngine:
         if any(token in name for token in numeric_tokens):
             return True
         return bool(value_s) and bool(re.fullmatch(r"-?\d+(?:\.\d+)?", value_s))
+
+    def _allow_numeric_sqli_param(self, name: str, ep: Optional[Endpoint]) -> bool:
+        if not ep:
+            return False
+        path = urllib.parse.urlparse(ep.url).path.lower()
+        sensitive_paths = (
+            "transfer", "transaction", "payment", "search", "lookup", "account", "invoice", "order", "api"
+        )
+        if not any(token in path for token in sensitive_paths):
+            return False
+        name = (name or "").lower()
+        target_tokens = (
+            "id", "account", "amount", "price", "total", "number", "qty", "quantity", "reference", "ref"
+        )
+        return any(token in name for token in target_tokens)
 
     def _is_validation_only_injection_fp(self, check_id: str, diff: dict, resp: dict) -> bool:
         if check_id not in ("A03_sqli", "A03_cmdi"):
@@ -1379,6 +1438,7 @@ class OWASPFuzzEngine:
         evidence = (ai_result.get("evidence", "") or "").lower()
         snippet = (context.get("body_snippet", "") or "").lower()
         tool_output = (context.get("tool_output", "") or "").lower()
+        payload = str(context.get("payload", "") or "").lower()
         combined = "\n".join([title, evidence, snippet, tool_output])
 
         if check_id in ("A03_sqli", "A03_cmdi"):
@@ -1391,7 +1451,15 @@ class OWASPFuzzEngine:
                 "sql syntax", "mysql", "postgres", "sqlite", "ora-", "odbc",
                 "boolean-based", "time-based", "union select", "back-end dbms",
             )
+            generic_error_markers = (
+                "internal server error", "traceback", "exception", "valueerror", "typeerror", "error",
+            )
+            has_generic_error = any(m in combined for m in generic_error_markers)
+            only_quote_probe = payload.strip() in {"'", '"'}
+            size_pct = float(context.get("size_pct", 0) or 0)
             if has_only_500_signal and not any(m in combined for m in strong_db_markers):
+                return True
+            if has_only_500_signal and has_generic_error and only_quote_probe and size_pct < 200:
                 return True
 
         if check_id == "A03_lfi":
@@ -1402,7 +1470,10 @@ class OWASPFuzzEngine:
             weak_name_markers = ("/etc/passwd", "/etc/shadow", "/etc/hosts", "win.ini", ".htpasswd")
             has_strong = any(m in combined for m in strong_file_content_markers)
             has_weak_names_only = any(m in combined for m in weak_name_markers) and not has_strong
+            has_path_listing_only = combined.count("/etc/") >= 2 and not has_strong
             if has_weak_names_only:
+                return True
+            if has_path_listing_only:
                 return True
 
         if check_id == "A10_ssrf":
@@ -1411,10 +1482,12 @@ class OWASPFuzzEngine:
                 "localhost:8080",
             )
             strong_ssrf_result_markers = (
-                "ami-id", "instance-id", "meta-data", "dynamic/instance-identity",
+                "ami-id", "instance-id", "security-credentials", "dynamic/instance-identity",
                 "oob callback", "interactsh", "root:x:0:0:",
             )
-            if any(m in combined for m in ssrf_echo_only_markers) and not any(m in combined for m in strong_ssrf_result_markers):
+            has_echo_payload = any(m in combined for m in ssrf_echo_only_markers)
+            has_real_server_side_effect = any(m in combined for m in strong_ssrf_result_markers)
+            if has_echo_payload and not has_real_server_side_effect:
                 return True
 
         return False
@@ -1430,7 +1503,7 @@ class OWASPFuzzEngine:
         c = colors.get(f.risk, "white")
         console.print(f"  [{c}][{f.risk}][/{c}] [bold]{f.owasp_id} — {f.title}[/bold] [dim](conf: {f.confidence}%)[/dim]")
         if f.evidence:
-            console.print(f"    [dim]Evidence: {f.evidence[:100]}[/dim]")
+            console.print(f"    [dim]Evidence: {f.evidence}[/dim]")
 
 class NucleiRunner:
     """

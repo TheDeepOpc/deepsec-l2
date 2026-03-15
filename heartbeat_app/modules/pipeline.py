@@ -1,4 +1,5 @@
 from .base import *
+from .wordlists import AIWordlistSelector as ModuleAIWordlistSelector
 
 class PentestPipeline:
     def __init__(self, args):
@@ -7,7 +8,9 @@ class PentestPipeline:
         self.client  = HTTPClient(self.session, timeout=DEFAULT_TIMEOUT)
         self.ai      = AIEngine()
         self.graph   = EndpointGraph()
-        self.wl_selector = AIWordlistSelector(self.ai)
+        # Use the selector from heartbeat_app.modules.wordlists explicitly.
+        # This avoids ambiguous symbol resolution from star imports.
+        self.wl_selector = ModuleAIWordlistSelector(self.ai)
         # V7 MEGA — new components
         self.oob     = OOBClient()
         self.ctf     = getattr(args, "ctf", False)

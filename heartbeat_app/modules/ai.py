@@ -36,10 +36,10 @@ class AIEngine:
         # is_real_bac — bool
         if "is_real_bac" in result:
             result["is_real_bac"] = bool(result["is_real_bac"])
-        # String fields — truncate
+        # String fields — normalize type only (do not truncate).
         for key in ("title", "evidence", "reason", "remediation", "exploit_cmd"):
             if key in result and isinstance(result[key], str):
-                result[key] = result[key][:500]
+                result[key] = result[key]
         return result
 
     def _extract_json_payload(self, text: str):

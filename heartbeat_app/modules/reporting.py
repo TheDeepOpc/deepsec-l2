@@ -71,7 +71,7 @@ class Reporter:
                     f"- Why suppressed: {f.suppression_reason or 'Filtered during false-positive reduction.'}",
                 ]
                 if f.evidence:
-                    lines.append(f"- Evidence: {f.evidence[:300]}")
+                    lines.append(f"- Evidence: {f.evidence}")
         return "\n".join(lines)
 
     def _build_finding_report(self, f: Finding) -> dict:
@@ -131,11 +131,11 @@ class Reporter:
 
             evidence = str(f.evidence or "")
             if "VERIFIED:" in evidence:
-                return evidence.split("VERIFIED:", 1)[1].strip()[:300] or "Verified by evidence in response comparison."
+                return evidence.split("VERIFIED:", 1)[1].strip() or "Verified by evidence in response comparison."
 
             tool_output = str(f.tool_output or "")
             if "VERIFIED:" in tool_output:
-                return tool_output.split("VERIFIED:", 1)[1].strip()[:300] or "Verified by scanner/tool output."
+                return tool_output.split("VERIFIED:", 1)[1].strip() or "Verified by scanner/tool output."
 
             if f.exploit_cmd:
                 return "Exploit PoC generated and verification signal met."
