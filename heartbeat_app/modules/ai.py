@@ -1,11 +1,19 @@
 from .base import *
 import threading
+import time
+
+_run_cmd = globals().get("_run_cmd")
 
 class AIEngine:
     # AI output validation schema — type and range for each field
     VALID_RISKS   = {"Critical", "High", "Medium", "Low", "Info"}
     VALID_OWASP   = {"A01","A02","A03","A04","A05","A06","A07","A08","A09","A10"}
-    _chat_sema = threading.Semaphore(2)
+    _chat_sema = threading.Semaphore(1)
+    _rate_limit_lock = threading.Lock()
+    _last_rate_limit_ts = 0.0
+    _rate_limit_cooldown_sec = 12.0
+    _last_call_ts = 0.0
+    _min_interval_sec = 0.5
 
     def __init__(self):
         self._cache: dict[str, Any] = {}
@@ -63,6 +71,12 @@ class AIEngine:
     def _call(self, prompt: str, cache: bool = True) -> Optional[dict]:
         if not HAS_OLLAMA:
             return None
+
+        # If provider recently throttled us, briefly back off globally.
+        with self._rate_limit_lock:
+            if (time.time() - self._last_rate_limit_ts) < self._rate_limit_cooldown_sec:
+                return None
+
         key = hashlib.md5(prompt.encode()).hexdigest()
         if cache and key in self._cache:
             return self._cache[key]
@@ -71,9 +85,13 @@ class AIEngine:
             if _client is None:
                 return None
             last_err = None
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
                     with self._chat_sema:
+                        with self._rate_limit_lock:
+                            wait = self._min_interval_sec - (time.time() - self._last_call_ts)
+                        if wait > 0:
+                            time.sleep(wait)
                         resp = _client.chat(
                             model=MODEL_NAME,
                             messages=[
@@ -81,12 +99,22 @@ class AIEngine:
                                 {"role": "user",   "content": prompt},
                             ],
                         )
+                        with self._rate_limit_lock:
+                            self._last_call_ts = time.time()
                     break
                 except Exception as e:
                     last_err = e
-                    if "429" not in str(e) and "too many concurrent requests" not in str(e).lower():
+                    msg = str(e).lower()
+                    is_rate_limited = ("429" in str(e) or "too many concurrent requests" in msg)
+                    if not is_rate_limited:
                         raise
-                    time.sleep(1.0 * (attempt + 1))
+                    with self._rate_limit_lock:
+                        self._last_rate_limit_ts = time.time()
+                    # Keep logs quiet on provider throttling; caller can proceed without AI.
+                    if attempt == 0:
+                        time.sleep(2.0)
+                        continue
+                    return None
             else:
                 raise last_err or RuntimeError("AI request failed")
             raw   = resp["message"]["content"]
@@ -103,7 +131,9 @@ class AIEngine:
                     self._cache[key] = {"findings": parsed}
                 return {"findings": parsed}
         except Exception as e:
-            console.print(f"[dim red]AI error: {e}[/dim red]")
+            msg = str(e).lower()
+            if "429" not in str(e) and "too many concurrent requests" not in msg:
+                console.print(f"[dim red]AI error: {e}[/dim red]")
         return None
 
     def identify_login_fields(self, html_body: str, url: str) -> dict:
@@ -176,6 +206,8 @@ Return JSON: {{"cmd": "curl ...", "expected": "what to look for", "safe": true}}
         cmd = result.get("cmd", "")
         if not cmd:
             return {"confirmed": False, "reason": "No verification command"}
+        if not callable(_run_cmd):
+            return {"confirmed": False, "reason": "Command runner unavailable", "cmd": cmd, "output": ""}
         r = _run_cmd(cmd, timeout=20)
         confirm_prompt = f"""Verification cmd: {cmd}
 Expected: {result.get('expected','')}

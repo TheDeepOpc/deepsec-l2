@@ -270,7 +270,9 @@ class PentestPipeline:
             for child in extra_children[:10]:
                 if not str(child).startswith("/"):
                     continue
-                child_url = urllib.parse.urljoin(ep.url.rstrip("/") + "/", child.lstrip("/"))
+                # Root-relative child paths must always resolve from target root,
+                # not from the current page path (prevents /login/transfer style artifacts).
+                child_url = target.rstrip("/") + child
                 if not child_url.startswith(target):
                     continue
                 if child_url in crawler.visited:
@@ -492,6 +494,31 @@ class PentestPipeline:
             planned = ordered
             console.print(f"[green]✓ Forced AI search/input tests: {len(forced_eps)} endpoint(s)[/green]")
 
+        # Drop low-value synthetic/nested auth endpoints before fuzzing.
+        def _should_prune_low_value(ep: Endpoint) -> bool:
+            try:
+                path = urllib.parse.urlparse(ep.url).path.lower().strip("/")
+            except Exception:
+                return False
+            if not path:
+                return False
+            segs = [s for s in path.split("/") if s]
+            if ep.score > 0:
+                return False
+            auth_tokens = {"login", "logout", "signin", "signout", "logoff", "register", "forgot-password"}
+            if len(segs) >= 2 and segs[0] in auth_tokens:
+                return True
+            if len(segs) >= 2 and any(s in auth_tokens for s in segs[1:]):
+                return True
+            if len(segs) >= 3:
+                return True
+            return False
+
+        before_prune = len(planned)
+        planned = [ep for ep in planned if not _should_prune_low_value(ep)]
+        if len(planned) != before_prune:
+            console.print(f"  [dim]Pruned {before_prune - len(planned)} low-value synthetic endpoint(s) before fuzzing[/dim]")
+
         console.print(f"[green]✓ AI prioritized {len(planned)} endpoints[/green]")
 
         # Step 8: OWASP Fuzzing (with site_tech)
@@ -514,7 +541,8 @@ class PentestPipeline:
             )
             all_findings.extend(dir_findings)
         lock         = threading.Lock()
-        sema         = threading.Semaphore(MAX_WORKERS)
+        ai_thread_limit = 2 if HAS_OLLAMA else MAX_WORKERS
+        sema         = threading.Semaphore(max(1, min(MAX_WORKERS, ai_thread_limit)))
         threads      = []
 
         def fuzz_ep(ep):
