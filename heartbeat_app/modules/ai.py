@@ -1,9 +1,11 @@
 from .base import *
+import threading
 
 class AIEngine:
     # AI output validation schema — type and range for each field
     VALID_RISKS   = {"Critical", "High", "Medium", "Low", "Info"}
     VALID_OWASP   = {"A01","A02","A03","A04","A05","A06","A07","A08","A09","A10"}
+    _chat_sema = threading.Semaphore(2)
 
     def __init__(self):
         self._cache: dict[str, Any] = {}
@@ -68,13 +70,25 @@ class AIEngine:
             _client = create_ollama_client()
             if _client is None:
                 return None
-            resp = _client.chat(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": FUZZER_SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
-            )
+            last_err = None
+            for attempt in range(3):
+                try:
+                    with self._chat_sema:
+                        resp = _client.chat(
+                            model=MODEL_NAME,
+                            messages=[
+                                {"role": "system", "content": FUZZER_SYSTEM_PROMPT},
+                                {"role": "user",   "content": prompt},
+                            ],
+                        )
+                    break
+                except Exception as e:
+                    last_err = e
+                    if "429" not in str(e) and "too many concurrent requests" not in str(e).lower():
+                        raise
+                    time.sleep(1.0 * (attempt + 1))
+            else:
+                raise last_err or RuntimeError("AI request failed")
             raw   = resp["message"]["content"]
             clean = re.sub(r'```json|```', '', raw).strip()
             parsed = self._extract_json_payload(clean)

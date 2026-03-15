@@ -268,6 +268,8 @@ class PentestPipeline:
 
             extra_children = analysis.get("suggested_child_paths", []) or []
             for child in extra_children[:10]:
+                if not str(child).startswith("/"):
+                    continue
                 child_url = urllib.parse.urljoin(ep.url.rstrip("/") + "/", child.lstrip("/"))
                 if not child_url.startswith(target):
                     continue
@@ -302,6 +304,8 @@ class PentestPipeline:
             console.print(f"  [dim]  AI: suggests {len(children)} child path(s) to probe[/dim]")
 
             for child in children[:8]:
+                if not str(child).startswith("/"):
+                    continue
                 child_url = self.args.target.rstrip("/") + child
                 if child_url in crawler.visited:
                     continue
