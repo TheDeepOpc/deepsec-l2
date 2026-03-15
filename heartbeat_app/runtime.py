@@ -84,7 +84,21 @@ def run_recon_only(target: str, model: str = "", output: str = ""):
 
 
 def run_tool_status() -> None:
-    core._print_tools_status()
+    # Keep compatibility across engine/core variants.
+    fn = getattr(core, "_print_tools_status", None) or getattr(core, "print_tools_status", None)
+    if callable(fn):
+        try:
+            fn()
+            return
+        except Exception:
+            # Fall through to safe fallback output.
+            pass
+
+    try:
+        from .modules.base import print_tools_status as base_print_tools_status
+        base_print_tools_status()
+    except Exception:
+        core.console.print("[yellow]Tool status is unavailable in this build.[/yellow]")
 
 
 def run_jwt_attack(target: str, jwt_token: str, model: str = "", output: str = ""):

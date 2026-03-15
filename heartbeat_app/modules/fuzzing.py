@@ -564,14 +564,14 @@ class OWASPFuzzEngine:
             "baseline_timing": base_fp.timing_avg,
             "baseline_title":  base_fp.title,
             "fuzz_status":     resp_for_ai.get("status", 0),
-            "fuzz_size":       len(resp_for_ai.get("body", "")),
+            "fuzz_size":       self._safe_body_len(resp_for_ai),
             "fuzz_timing":     resp_for_ai.get("timing", 0),
             "size_diff":       best_diff.get("size_diff", 0),
             "size_pct":        best_diff.get("size_pct", 0),
             "time_anomaly":    best_diff.get("time_anomaly", False),
             "new_errors":      best_diff.get("new_errors", []),
             "status_changed":  best_diff.get("status_changed", False),
-            "body_snippet":    resp_for_ai.get("body", "")[:500],
+            "body_snippet":    self._safe_body_text(resp_for_ai)[:500],
             "tool_output":     tool_out.get("output", "")[:800],
         }
 
@@ -579,6 +579,9 @@ class OWASPFuzzEngine:
         if not ai_result or not ai_result.get("found"):
             if ai_result and ai_result.get("confidence", 0) > 20:
                 self.signals.append({**context, "ai": ai_result})
+            return None
+
+        if self._hard_reject_ai_finding(check_id, ai_result, context):
             return None
 
         confidence = ai_result.get("confidence", 50)
@@ -596,7 +599,7 @@ class OWASPFuzzEngine:
         else:
             diff_str = ""
         f = Finding(
-            owasp_id     = ai_result.get("owasp_id", check_id[:3].upper()),
+            owasp_id     = self._normalize_owasp_id(check_id, ai_result.get("owasp_id", check_id[:3].upper())),
             owasp_name   = ai_result.get("owasp_name", check_id),
             title        = ai_result.get("title", ""),
             risk         = ai_result.get("risk", "Medium"),
@@ -609,7 +612,7 @@ class OWASPFuzzEngine:
             baseline_diff= diff_str,
             tool_output  = tool_out.get("output", "")[:500],
             request_raw  = self._build_request_str(ep, param_key, best_payload),
-            response_raw = (resp_for_ai.get("body", "")[:600] if resp_for_ai else ""),
+            response_raw = (self._safe_body_text(resp_for_ai)[:600] if resp_for_ai else ""),
             exploit_cmd  = ai_result.get("exploit_cmd", ""),
             remediation  = ai_result.get("remediation", ""),
         )
@@ -635,11 +638,11 @@ class OWASPFuzzEngine:
                     "payload": f"id={test_val} (IDOR attempt)", "tool": "idor_probe",
                     "baseline_status": base_fp.status, "baseline_size": base_fp.body_len,
                     "baseline_timing": base_fp.timing_avg, "baseline_title": base_fp.title,
-                    "fuzz_status": resp.get("status"), "fuzz_size": len(resp.get("body","")),
+                    "fuzz_status": resp.get("status"), "fuzz_size": self._safe_body_len(resp),
                     "fuzz_timing": resp.get("timing", 0), "size_diff": diff["size_diff"],
                     "size_pct": diff["size_pct"], "time_anomaly": False,
                     "new_errors": diff.get("new_errors", []), "status_changed": diff["status_changed"],
-                    "body_snippet": resp.get("body","")[:500],
+                    "body_snippet": self._safe_body_text(resp)[:500],
                     "tool_output": f"ID {orig} vs {test_val}: size diff {diff['size_diff']}",
                 }
                 ai_r = self.ai.classify_finding(context)
@@ -1319,7 +1322,7 @@ class OWASPFuzzEngine:
         if check_id not in ("A03_sqli", "A03_cmdi"):
             return False
         new_errors = " ".join(str(x) for x in diff.get("new_errors", []))
-        body = (resp.get("body", "") or "")[:2000]
+        body = self._safe_body_text(resp)[:2000]
         combined = f"{new_errors}\n{body}".lower()
 
         validation_markers = [
@@ -1349,6 +1352,72 @@ class OWASPFuzzEngine:
             diff.get("new_errors") or
             diff.get("size_pct", 0) > 25
         )
+
+    def _safe_body_text(self, resp: dict) -> str:
+        body = (resp or {}).get("body", "")
+        if body is None:
+            return ""
+        if isinstance(body, str):
+            return body
+        try:
+            return str(body)
+        except Exception:
+            return ""
+
+    def _safe_body_len(self, resp: dict) -> int:
+        return len(self._safe_body_text(resp))
+
+    def _normalize_owasp_id(self, check_id: str, ai_owasp_id: str) -> str:
+        # Keep injection-family checks in A03 even if model mislabels them.
+        if check_id.startswith("A03_"):
+            return "A03"
+        return ai_owasp_id or check_id[:3].upper()
+
+    def _hard_reject_ai_finding(self, check_id: str, ai_result: dict, context: dict) -> bool:
+        """Deterministic guardrail to suppress common AI false positives."""
+        title = (ai_result.get("title", "") or "").lower()
+        evidence = (ai_result.get("evidence", "") or "").lower()
+        snippet = (context.get("body_snippet", "") or "").lower()
+        tool_output = (context.get("tool_output", "") or "").lower()
+        combined = "\n".join([title, evidence, snippet, tool_output])
+
+        if check_id in ("A03_sqli", "A03_cmdi"):
+            has_only_500_signal = (
+                context.get("fuzz_status") == 500 and
+                context.get("baseline_status") in (200, 400, 401, 403) and
+                not context.get("time_anomaly")
+            )
+            strong_db_markers = (
+                "sql syntax", "mysql", "postgres", "sqlite", "ora-", "odbc",
+                "boolean-based", "time-based", "union select", "back-end dbms",
+            )
+            if has_only_500_signal and not any(m in combined for m in strong_db_markers):
+                return True
+
+        if check_id == "A03_lfi":
+            strong_file_content_markers = (
+                "root:x:0:0:", "daemon:x:", "/bin/bash", "/usr/sbin/nologin",
+                "[extensions]", "for 16-bit app support", "localhost", "127.0.0.1", "::1",
+            )
+            weak_name_markers = ("/etc/passwd", "/etc/shadow", "/etc/hosts", "win.ini", ".htpasswd")
+            has_strong = any(m in combined for m in strong_file_content_markers)
+            has_weak_names_only = any(m in combined for m in weak_name_markers) and not has_strong
+            if has_weak_names_only:
+                return True
+
+        if check_id == "A10_ssrf":
+            ssrf_echo_only_markers = (
+                "http://169.254.169.254", "file:///etc/passwd", "gopher://127.0.0.1",
+                "localhost:8080",
+            )
+            strong_ssrf_result_markers = (
+                "ami-id", "instance-id", "meta-data", "dynamic/instance-identity",
+                "oob callback", "interactsh", "root:x:0:0:",
+            )
+            if any(m in combined for m in ssrf_echo_only_markers) and not any(m in combined for m in strong_ssrf_result_markers):
+                return True
+
+        return False
 
     def _build_request_str(self, ep: Endpoint, param_key: str, payload: str) -> str:
         pname = param_key.split(":")[-1]

@@ -219,7 +219,7 @@ class AIWordlistSelector:
         }
         # Hard blacklist: never select these lists.
         self._hard_block_names: dict[str, list[str]] = {
-            "dirs": ["common_directories"],
+            "dirs": ["common_directories", "common-directories", "quickhits", "tiny"],
             "lfi": ["dolfin", "jhaddix"],
         }
 
@@ -290,14 +290,39 @@ class AIWordlistSelector:
     def _filter_candidates(self, category: str, candidates: list[str]) -> list[str]:
         blocked = [k.lower() for k in self._hard_block_names.get(category, [])]
         if not blocked:
-            return candidates
+            blocked = []
         filtered = []
         for p in candidates:
             name = Path(p).name.lower()
             if any(b in name for b in blocked):
                 continue
+            if category == "dirs" and self._is_too_small_dir_wordlist(p):
+                continue
             filtered.append(p)
         return filtered
+
+    def _is_too_small_dir_wordlist(self, path: str) -> bool:
+        """Reject tiny dir lists that produce poor coverage/noisy scans."""
+        try:
+            p = Path(path)
+            if not p.exists():
+                return True
+            # Very tiny lists are rarely useful for discovery.
+            kb = p.stat().st_size / 1024.0
+            if kb < 2:
+                return True
+            line_count = 0
+            with p.open("r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    s = line.strip()
+                    if not s or s.startswith("#"):
+                        continue
+                    line_count += 1
+                    if line_count >= 100:
+                        return False
+            return True
+        except Exception:
+            return False
 
     def _is_hard_blocked(self, category: str, path: str) -> bool:
         blocked = [k.lower() for k in self._hard_block_names.get(category, [])]
