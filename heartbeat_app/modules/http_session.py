@@ -431,6 +431,72 @@ class Crawler:
         # Store site technology (for wordlist selection)
         self.site_tech      : dict           = {}
 
+    def _snapshot_auth_state(self) -> dict:
+        s = self.client.session
+        return {
+            "cookies": dict(getattr(s, "cookies", {}) or {}),
+            "headers": dict(getattr(s, "headers", {}) or {}),
+            "jwt_token": getattr(s, "jwt_token", "") or "",
+            "csrf_token": getattr(s, "csrf_token", "") or "",
+            "role": getattr(s, "role", "") or "",
+            "logged_in": bool(getattr(s, "logged_in", False)),
+        }
+
+    def _restore_auth_state(self, snap: dict) -> None:
+        s = self.client.session
+        s.cookies = dict(snap.get("cookies", {}) or {})
+        s.headers = dict(snap.get("headers", {}) or {})
+        s.jwt_token = snap.get("jwt_token", "") or ""
+        s.csrf_token = snap.get("csrf_token", "") or ""
+        s.role = snap.get("role", "") or ""
+        s.logged_in = bool(snap.get("logged_in", False))
+
+    def _response_invalidated_auth(self, before: dict, resp: dict) -> bool:
+        if not before.get("logged_in"):
+            return False
+
+        before_cookies = before.get("cookies", {}) or {}
+        after_cookies = dict(getattr(self.client.session, "cookies", {}) or {})
+
+        # Strong generic signal: authenticated cookie state was cleared.
+        if before_cookies and not after_cookies:
+            return True
+
+        # If many prior cookies disappeared after one request, treat as session loss.
+        if before_cookies:
+            retained = sum(1 for k in before_cookies if k in after_cookies)
+            if retained == 0:
+                return True
+
+        # Generic cookie-invalidation signal via Set-Cookie headers.
+        headers = resp.get("headers", {}) or {}
+        raw_set_cookie = []
+        for hk, hv in headers.items():
+            if str(hk).lower() == "set-cookie":
+                raw_set_cookie.append(str(hv))
+        if raw_set_cookie:
+            merged = "\n".join(raw_set_cookie).lower()
+            invalidation_markers = ("max-age=0", "expires=thu, 01 jan 1970", "expires=mon, 01 jan 1990")
+            if any(m in merged for m in invalidation_markers):
+                return True
+
+        return False
+
+    def _safe_get(self, url: str) -> dict:
+        sess = self.client.session
+        if not getattr(sess, "logged_in", False):
+            return self.client.get(url)
+
+        snap = self._snapshot_auth_state()
+        resp = self.client.get(url)
+        if self._response_invalidated_auth(snap, resp):
+            self._restore_auth_state(snap)
+            out = dict(resp)
+            out["auth_state_changed"] = True
+            out["auth_state_reason"] = "request invalidated authenticated session; previous session restored"
+            return out
+        return resp
+
     def crawl(self, max_depth: int = MAX_CRAWL_DEPTH) -> list[Endpoint]:
         console.print(f"\n[bold cyan]━━ CRAWLER STARTED ━━[/bold cyan]")
         self._max_depth = max_depth
@@ -480,7 +546,7 @@ class Crawler:
         console.print(f"[dim]  Probing {len(well_known)} well-known paths...[/dim]")
 
         # Fetch root page for technology detection
-        root_resp = self.client.get(base)
+        root_resp = self._safe_get(base)
         if root_resp["status"] != 0:
             self.site_tech = RiskScorer.detect_tech(root_resp)
             console.print(f"[dim]  Detected tech: {self.site_tech}[/dim]")
@@ -489,8 +555,11 @@ class Crawler:
             url = base + path
             if url in self.visited:
                 continue
-            r = self.client.get(url)
+            r = self._safe_get(url)
             if r["status"] == 0:
+                continue
+            if r.get("auth_state_changed"):
+                console.print(f"  [dim yellow]⚠ auth-safe skip: {url}[/dim yellow]")
                 continue
             with self._lock:
                 self.visited.add(url)
@@ -641,9 +710,12 @@ class Crawler:
                 url = parent_path + suffix
                 if url in self.visited:
                     continue
-                r = self.client.get(url)
+                r = self._safe_get(url)
                 with self._lock:
                     self.visited.add(url)
+                if r.get("auth_state_changed"):
+                    console.print(f"  [dim yellow]⚠ auth-safe skip: {url}[/dim yellow]")
+                    continue
                 if r["status"] in (200, 201, 202):
                     # AI checks each 403→200 response
                     is_real = self._ai_check_403_child(parent_path, url, r)
@@ -657,9 +729,12 @@ class Crawler:
                             nurl = url.rstrip("/") + nsuffix
                             if nurl in self.visited:
                                 continue
-                            nr = self.client.get(nurl)
+                            nr = self._safe_get(nurl)
                             with self._lock:
                                 self.visited.add(nurl)
+                            if nr.get("auth_state_changed"):
+                                console.print(f"  [dim yellow]⚠ auth-safe skip: {nurl}[/dim yellow]")
+                                continue
                             if nr["status"] in (200, 201, 202):
                                 nis_real = self._ai_check_403_child(parent_path, nurl, nr)
                                 if nis_real:
@@ -697,8 +772,12 @@ class Crawler:
             if url in self.visited or len(self.visited) >= MAX_URLS:
                 return
             self.visited.add(url)
-        resp  = self.client.get(url)
+
+        resp  = self._safe_get(url)
         if resp["status"] == 0:
+            return
+        if resp.get("auth_state_changed"):
+            console.print(f"  [dim yellow]⚠ auth-safe skip: {url}[/dim yellow]")
             return
         status = resp["status"]
         body   = resp["body"]
@@ -860,7 +939,9 @@ class Crawler:
             probe_url = urllib.parse.urljoin(base + "/", path.lstrip("/"))
             if probe_url in self.visited:
                 continue
-            r = self.client.get(probe_url)
+            r = self._safe_get(probe_url)
+            if r.get("auth_state_changed"):
+                continue
             if r["status"] in (200, 201):
                 self.visited.add(probe_url)
                 if "swagger" in r["body"][:200].lower() or "openapi" in r["body"][:200].lower():

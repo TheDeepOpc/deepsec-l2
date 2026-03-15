@@ -618,7 +618,10 @@ class OWASPFuzzEngine:
         )
         with self._lock:
             self.findings.append(f)
-        self._print_finding(f)
+        if self._should_print_raw_finding(f):
+            self._print_finding(f)
+        else:
+            console.print(f"  [dim yellow]~ Candidate suppressed from live log (awaiting FP filter): {f.title[:70]}[/dim yellow]")
         return f
 
     # ── Specialized probes ────────────────────────────────────────────────
@@ -1440,6 +1443,7 @@ class OWASPFuzzEngine:
         tool_output = (context.get("tool_output", "") or "").lower()
         payload = str(context.get("payload", "") or "").lower()
         combined = "\n".join([title, evidence, snippet, tool_output])
+        non_ai_combined = "\n".join([snippet, tool_output])
 
         if check_id in ("A03_sqli", "A03_cmdi"):
             has_only_500_signal = (
@@ -1468,9 +1472,14 @@ class OWASPFuzzEngine:
                 "[extensions]", "for 16-bit app support", "localhost", "127.0.0.1", "::1",
             )
             weak_name_markers = ("/etc/passwd", "/etc/shadow", "/etc/hosts", "win.ini", ".htpasswd")
-            has_strong = any(m in combined for m in strong_file_content_markers)
-            has_weak_names_only = any(m in combined for m in weak_name_markers) and not has_strong
-            has_path_listing_only = combined.count("/etc/") >= 2 and not has_strong
+            # For LFI, trust only non-AI runtime signals (response snippet/tool output),
+            # not model-generated evidence text.
+            has_strong = any(m in non_ai_combined for m in strong_file_content_markers)
+            has_weak_names_only = any(m in non_ai_combined for m in weak_name_markers) and not has_strong
+            has_path_listing_only = non_ai_combined.count("/etc/") >= 2 and not has_strong
+            # If there is no concrete file-content disclosure, hard-reject.
+            if not has_strong:
+                return True
             if has_weak_names_only:
                 return True
             if has_path_listing_only:
@@ -1491,6 +1500,24 @@ class OWASPFuzzEngine:
                 return True
 
         return False
+
+    def _should_print_raw_finding(self, f: Finding) -> bool:
+        title = (f.title or "").lower()
+        ev = (f.evidence or "").lower()
+        out = (f.tool_output or "").lower()
+        body = (f.response_raw or "").lower()
+        combined = "\n".join([ev, out, body])
+
+        # Avoid alarming live logs with weak LFI claims before FP filter phase.
+        if "lfi" in title or "file inclusion" in title or "/etc/passwd" in combined:
+            strong_markers = (
+                "root:x:0:0:", "daemon:x:", "/bin/bash", "/usr/sbin/nologin",
+                "[extensions]", "for 16-bit app support", "127.0.0.1", "::1",
+            )
+            if not any(m in combined for m in strong_markers):
+                return False
+
+        return True
 
     def _build_request_str(self, ep: Endpoint, param_key: str, payload: str) -> str:
         pname = param_key.split(":")[-1]

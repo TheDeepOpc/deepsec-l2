@@ -1,5 +1,8 @@
 from .base import *
 from .wordlists import AIWordlistSelector as ModuleAIWordlistSelector
+from .http_session import HTTPClient, SessionManager, Crawler, ParamDiscoverer, BaselineEngine
+from .fuzzing import KaliToolRunner, OWASPFuzzEngine, NucleiRunner
+from .ai import FPFilter, Correlator
 
 class PentestPipeline:
     def __init__(self, args):
@@ -511,6 +514,16 @@ class PentestPipeline:
         threads      = []
 
         def fuzz_ep(ep):
+            auth_snap = None
+            if getattr(self.session, "logged_in", False):
+                auth_snap = {
+                    "cookies": dict(getattr(self.session, "cookies", {}) or {}),
+                    "headers": dict(getattr(self.session, "headers", {}) or {}),
+                    "jwt_token": getattr(self.session, "jwt_token", "") or "",
+                    "csrf_token": getattr(self.session, "csrf_token", "") or "",
+                    "role": getattr(self.session, "role", "") or "",
+                    "logged_in": bool(getattr(self.session, "logged_in", False)),
+                }
             try:
                 with sema:
                     results = fuzzer.test_endpoint(ep)
@@ -518,6 +531,19 @@ class PentestPipeline:
                         all_findings.extend(results)
             except Exception as exc:
                 console.print(f"  [dim red]Thread error for {ep.url[:50]}: {exc}[/dim red]")
+            finally:
+                # Generic auth-safety: if an endpoint invalidates active session,
+                # restore previous authenticated state without path-name hardcoding.
+                if auth_snap and auth_snap.get("logged_in"):
+                    cookies_now = dict(getattr(self.session, "cookies", {}) or {})
+                    if auth_snap.get("cookies") and not cookies_now:
+                        self.session.cookies = dict(auth_snap.get("cookies", {}) or {})
+                        self.session.headers = dict(auth_snap.get("headers", {}) or {})
+                        self.session.jwt_token = auth_snap.get("jwt_token", "") or ""
+                        self.session.csrf_token = auth_snap.get("csrf_token", "") or ""
+                        self.session.role = auth_snap.get("role", "") or ""
+                        self.session.logged_in = bool(auth_snap.get("logged_in", False))
+                        console.print(f"  [dim yellow]⚠ auth session restored after endpoint: {ep.url}[/dim yellow]")
 
         for ep in planned[:limit]:
             console.print(f"[dim]  ▶ {ep.method} {ep.url[:70]} (score:{ep.score:.0f})[/dim]")
