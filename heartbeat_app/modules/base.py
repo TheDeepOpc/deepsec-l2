@@ -3,6 +3,8 @@ import shutil
 from ..engine import *
 from .. import engine as _engine
 
+_run_cmd = getattr(_engine, "_run_cmd", None) or getattr(_engine, "run_cmd", None)
+
 
 def print_tools_status() -> None:
 	"""Compatibility wrapper for tool availability output."""
@@ -33,4 +35,4 @@ def create_ollama_client():
 	except Exception:
 		return None
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [name for name in globals() if not name.startswith("_")] + ["_run_cmd"]
