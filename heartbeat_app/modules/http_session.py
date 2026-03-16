@@ -70,11 +70,17 @@ class HTTPClient:
                 }
         except urllib.error.HTTPError as e:
             timing    = time.time() - t0
-            resp_body = e.read(50_000).decode("utf-8", errors="replace") if e.fp else ""
+            resp_body = ""
+            error_text = str(e)
+            if e.fp:
+                try:
+                    resp_body = e.read(50_000).decode("utf-8", errors="replace")
+                except Exception as read_exc:
+                    error_text = f"{error_text}; body_read_error={read_exc}"
             return {
                 "ok": False, "status": e.code, "url": url,
                 "headers": dict(e.headers) if e.headers else {},
-                "body": resp_body, "timing": round(timing, 3), "error": str(e),
+                "body": resp_body, "timing": round(timing, 3), "error": error_text,
             }
         except Exception as e:
             return {

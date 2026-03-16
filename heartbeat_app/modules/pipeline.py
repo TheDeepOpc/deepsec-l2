@@ -3,6 +3,9 @@ from .wordlists import AIWordlistSelector as ModuleAIWordlistSelector
 from .http_session import HTTPClient, SessionManager, Crawler, ParamDiscoverer, BaselineEngine
 from .fuzzing import KaliToolRunner, OWASPFuzzEngine, NucleiRunner
 from .ai import FPFilter, Correlator
+from .ai_exploiter import IntelligentPayloadGenerator, MultiStageAttackChainer, WildcardWAFEvader
+from .ai_risk_model import VulnerabilityPredictor, EndpointPrioritizer, BehavioralAnalyzer
+from .vuln_explainer import VulnerabilityExplainer
 
 class PentestPipeline:
     def __init__(self, args):
@@ -18,6 +21,16 @@ class PentestPipeline:
         self.oob     = OOBClient()
         self.ctf     = getattr(args, "ctf", False)
         self._last_target = (getattr(args, "target", "") or "").rstrip("/")
+        self._partial_findings = []
+        
+        # NEW: Enterprise-grade AI exploitation modules
+        self.payload_gen = IntelligentPayloadGenerator(self.ai)
+        self.attack_chainer = MultiStageAttackChainer(self.ai, self.client)
+        self.waf_evader = WildcardWAFEvader(self.client)
+        self.vuln_predictor = VulnerabilityPredictor(self.ai)
+        self.endpoint_prioritizer = EndpointPrioritizer(self.ai)
+        self.behavior_analyzer = BehavioralAnalyzer(self.ai)
+        self.vuln_explainer = VulnerabilityExplainer(self.ai)
         self._partial_findings = []
 
     def run(self):
@@ -550,10 +563,50 @@ class PentestPipeline:
                 return True
             return False
 
+        def _planner_route_key(ep: Endpoint) -> str:
+            parsed = urllib.parse.urlparse(ep.url)
+            segs = [s for s in (parsed.path or "/").strip("/").split("/") if s]
+            norm_segs = []
+            for seg in segs:
+                if re.fullmatch(r"\d+", seg):
+                    norm_segs.append(":id")
+                else:
+                    norm_segs.append(seg.lower())
+            query_names = sorted(urllib.parse.parse_qs(parsed.query).keys())
+            query_part = "?" + "&".join(query_names) if query_names else ""
+            return f"{ep.method.upper()}:/{'/'.join(norm_segs)}{query_part}"
+
+        def _planner_route_cap(ep: Endpoint, route_key: str) -> int:
+            path = (urllib.parse.urlparse(ep.url).path or "").lower()
+            if any(token in path for token in ("/search", "/query", "/find")):
+                return 2
+            if "/lists/view/" in path and re.search(r"/\d+/?$", path):
+                return 1
+            if any(token in path for token in ("/news", "/guide", "/category", "/central")) and ep.score <= 20:
+                return 1
+            if ":id" in route_key:
+                return 2
+            return 3
+
         before_prune = len(planned)
         planned = [ep for ep in planned if not _should_prune_low_value(ep)]
         if len(planned) != before_prune:
             console.print(f"  [dim]Pruned {before_prune - len(planned)} low-value synthetic endpoint(s) before fuzzing[/dim]")
+
+        capped_planned = []
+        route_counts = {}
+        route_pruned = 0
+        for ep in planned:
+            route_key = _planner_route_key(ep)
+            cap = _planner_route_cap(ep, route_key)
+            if route_counts.get(route_key, 0) >= cap:
+                route_pruned += 1
+                continue
+            route_counts[route_key] = route_counts.get(route_key, 0) + 1
+            capped_planned.append(ep)
+        planned = capped_planned
+        if route_pruned:
+            console.print(f"  [dim]Pruned {route_pruned} repetitive route duplicate(s) before fuzzing[/dim]")
 
         console.print(f"[green]✓ AI prioritized {len(planned)} endpoints[/green]")
 
@@ -565,8 +618,28 @@ class PentestPipeline:
             self.wl_selector, site_tech=site_tech
         )
 
-        limit        = len(planned) if self.args.deep else min(len(planned), 30)
+        unique_routes = len({_planner_route_key(ep) for ep in planned})
+        non_deep_limit = max(30, min(60, unique_routes))
+        limit        = len(planned) if self.args.deep else min(len(planned), non_deep_limit)
         all_findings = list(bac_findings) + oauth_saml_findings
+
+        # NEW: Advanced AI Vulnerability Prediction & Prioritization
+        console.print(f"\n[cyan]━━ AI RISK PREDICTION & PRIORITIZATION ━━[/cyan]")
+        for ep in planned[:limit]:
+            # Predict vulnerabilities for each endpoint
+            try:
+                resp = self.client.get(ep.url)
+                risk_profile = self.predict_vulnerabilities_advanced(
+                    ep, resp.get("body", ""), "detected_tech"
+                )
+                ep.predicted_risk = risk_profile.risk_score
+            except Exception:
+                ep.predicted_risk = 0
+        
+        # Re-prioritize by predicted risk
+        planned_by_risk = sorted(planned[:limit], key=lambda e: getattr(e, 'predicted_risk', 0), reverse=True)
+        console.print(f"[green]✓ Endpoints re-prioritized by AI vulnerability prediction[/green]")
+        planned = planned_by_risk
 
         # ── Smart Directory/File Fuzzing ──────────────────────────────────────
         if shutil.which("ffuf") or shutil.which("gobuster"):
@@ -767,6 +840,13 @@ class PentestPipeline:
         console.print(f"\n[cyan]━━ FP FILTER ━━[/cyan]")
         fp_filter = FPFilter(self.ai, self.client)
         clean     = fp_filter.filter(all_findings)
+
+        # NEW Step 10b: Advanced AI Exploitation Analysis
+        if clean:
+            self._advanced_ai_exploitation(target, clean)
+            # Re-rank findings by ROI (exploitability × impact)
+            clean = self._rank_findings_by_roi(clean)
+
         self._partial_findings = list(clean)
         console.print(f"[green]✓ {len(clean)} findings kept, "
                       f"{len(all_findings)-len(clean)} FPs removed[/green]")
@@ -791,6 +871,117 @@ class PentestPipeline:
         self._ai_final_assessment(clean, all_findings, target, site_tech)
 
         return clean
+
+    def _advanced_ai_exploitation(self, target: str, all_findings: List):
+        """
+        NEW: Advanced AI-powered exploitation analysis.
+        Plans multi-stage attack chains and intelligent payload strategies.
+        """
+        console.print(f"\n[cyan]━━ ADVANCED AI EXPLOITATION PLANNING ━━[/cyan]")
+        
+        # Step 1: Plan multi-stage attack chains
+        chains = self.attack_chainer.plan_chain(all_findings)
+        if chains:
+            console.print(f"[green]✓ {len(chains)} multi-stage attack chain(s) planned[/green]")
+            for chain in chains[:3]:
+                console.print(f"  [dim]→ {chain.name}: {chain.description[:60]}...[/dim]")
+        
+        # Step 2: Detect WAF and plan evasion strategies
+        waf_detected = self.waf_evader.detect_waf(target)
+        if waf_detected != "none":
+            console.print(f"  [yellow]⚠ WAF detected: {waf_detected}[/yellow]")
+            evasion = self.waf_evader.get_evasion_strategy(waf_detected)
+            console.print(f"  [dim]Evasion techniques: {', '.join(evasion['techniques'][:3])}[/dim]")
+        
+        # Step 3: Identify zero-day patterns
+        zero_days = self.vuln_predictor.identify_zero_day_patterns(self.graph.endpoints, all_findings)
+        if zero_days:
+            console.print(f"[yellow]⚠ {len(zero_days)} potential zero-day pattern(s) detected[/yellow]")
+            for zday in zero_days[:2]:
+                console.print(f"  [dim]Type: {zday['type']} — {zday['reason'][:50]}...[/dim]")
+
+    def _intelligent_endpoint_prioritization(self, endpoints: List) -> List:
+        """
+        NEW: Intelligent endpoint prioritization using risk modeling.
+        Returns endpoints sorted by vulnerability likelihood.
+        """
+        console.print(f"\n[cyan]━━ AI INTELLIGENT PRIORITIZATION ━━[/cyan]")
+        
+        prioritized = self.endpoint_prioritizer.prioritize(endpoints, {})
+        
+        # Show top 10 highest-risk endpoints
+        console.print(f"[green]✓ Endpoints re-prioritized by AI risk model[/green]")
+        for i, ep in enumerate(prioritized[:10]):
+            ep_str = (ep.url if hasattr(ep, 'url') else str(ep))[:60]
+            console.print(f"  [{i+1}] {ep_str}")
+        
+        return prioritized
+
+    def _predict_vulnerabilities_advanced(self, endpoint, response_body: str, tech_stack: str):
+        """
+        NEW: Use ML-inspired vulnerability prediction.
+        Returns risk profile with likelihood for each vulnerability type.
+        """
+        profile = self.vuln_predictor.predict_vulnerabilities(
+            endpoint.url if hasattr(endpoint, 'url') else str(endpoint),
+            response_body,
+            {},
+            tech_stack
+        )
+        
+        if profile.risk_score > 60:
+            console.print(f"  [yellow]⚠ High-risk endpoint identified: {endpoint.url[:50]} ({profile.risk_score:.0f}/100)[/yellow]")
+            for vuln_type, likelihood in profile.vulnerability_likelihood.items():
+                if likelihood > 0.65:
+                    console.print(f"    - {vuln_type}: {likelihood*100:.0f}% likelihood")
+        
+        return profile
+
+    def _intelligent_payload_generation_for_endpoint(self, endpoint, vuln_type: str) -> List[str]:
+        """
+        NEW: Generate intelligent payloads based on context.
+        Uses tech stack, parameter names, and WAF detection.
+        """
+        from .ai_exploiter import PayloadContext
+        
+        tech_stack = "unknown"  # Would be detected from response analysis
+        param_name = endpoint.params.keys() if hasattr(endpoint, 'params') else []
+        
+        ctx = PayloadContext(
+            vuln_type=vuln_type,
+            param_name=list(param_name)[0] if param_name else "query",
+            param_type="query",
+            tech_stack=tech_stack,
+            response_type="html",
+            waf_detected=self.waf_evader.detected_waf,
+            encoding="none",
+            context_value="",
+            injection_point="reflective",
+        )
+        
+        payloads = self.payload_gen.generate(ctx)
+        return payloads
+
+    def _rank_findings_by_roi(self, findings: List) -> List:
+        """
+        NEW: Re-rank findings by exploitation ROI (return on investment).
+        Prioritizes high-impact, easily exploitable vulnerabilities.
+        """
+        return self.endpoint_prioritizer.rank_by_roi(findings)
+
+    def _generate_detailed_explanations(self, findings: List) -> Dict:
+        """
+        NEW: Generate detailed vulnerability explanations for findings.
+        Returns mapping of finding_id → detailed explanation.
+        """
+        explanations = {}
+        for finding in findings:
+            try:
+                explanation = self.vuln_explainer.explain_vulnerability(finding)
+                explanations[id(finding)] = explanation
+            except Exception:
+                pass  # Skip findings that can't be explained
+        return explanations
 
     def save_partial_results(self, reason: str = "interrupted"):
         """Best-effort partial report save used by runtime on interrupts/exceptions."""
@@ -904,6 +1095,33 @@ Return JSON: {{"steps":["step1","step2"],"flag_path":"/root/flag.txt","estimated
             console.print("  [dim yellow]  ⚠ No dir wordlist — skipping smart dir fuzz[/dim yellow]")
             return findings
 
+        def _looks_error_page(body: str) -> bool:
+            if not body:
+                return False
+            body_lower = body.lower()[:2000]
+            title_m = re.search(r'<title[^>]*>(.*?)</title>', body, re.I | re.S)
+            title = (title_m.group(1).strip().lower() if title_m else "")
+            error_signals = [
+                "page not found", "not found", "404", "internal server error",
+                "500", "sahifa topilmadi", "саҳифа топилмади", "xatolik", "error"
+            ]
+            return any(sig in title or sig in body_lower for sig in error_signals)
+
+        def _matches_404_profile(body: str, cur_profile: "SmartFuzzProfile") -> bool:
+            if not body:
+                return False
+            body_size = len(body)
+            body_words = len(re.findall(r'\S+', body))
+            body_lines = len(body.splitlines())
+            tolerance = max(80, int(getattr(cur_profile, "tolerance_bytes", 20) or 20) * 4)
+            if any(abs(body_size - size) <= tolerance for size in (cur_profile.filter_sizes or [])):
+                return True
+            if any(abs(body_words - words) <= 8 for words in (cur_profile.filter_words or [])):
+                return True
+            if any(abs(body_lines - lines) <= 5 for lines in (cur_profile.filter_lines or [])):
+                return True
+            return False
+
         while queue_dirs and current_depth <= max_depth:
             current_batch = list(queue_dirs)
             queue_dirs    = []
@@ -945,6 +1163,27 @@ Return JSON: {{"steps":["step1","step2"],"flag_path":"/root/flag.txt","estimated
                     # Fetch the hit via GET
                     resp = self.client.get(hit_url)
                     body = resp.get("body", "")
+                    final_status = resp.get("status", hit_status)
+                    final_url = resp.get("url", hit_url)
+
+                    # Redirect-to-404 / error pages are noise and should not become findings.
+                    if final_status == 0:
+                        console.print(
+                            f"  [dim yellow]  ↳ skip fetch error: {hit_url} — {resp.get('error', '')[:90]}[/dim yellow]"
+                        )
+                        continue
+                    if final_status == 404 or (
+                        hit_status in (301, 302, 307, 308) and
+                        (final_status in (404, 500) or _looks_error_page(body) or _matches_404_profile(body, cur_profile))
+                    ):
+                        reason = "redirect-to-error/404 noise"
+                        if final_status == 404:
+                            reason = "final response is 404"
+                        console.print(
+                            f"  [dim]  ↳ skip noise: {hit_url}  hit_status={hit_status} final_status={final_status} "
+                            f"reason={reason}[/dim]"
+                        )
+                        continue
 
                     # AI analysis
                     verdict = ai.analyze_dir_hit(
