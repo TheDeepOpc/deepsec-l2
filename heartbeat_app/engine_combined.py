@@ -5734,8 +5734,20 @@ class Recursive403Bypasser:
         self.wl_selector = wl_selector
         self._visited    : Set[str] = set()
 
+    @staticmethod
+    def _is_file_like_url(url: str) -> bool:
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path or ""
+        if path.endswith("/"):
+            return False
+        leaf = path.rstrip("/").rsplit("/", 1)[-1] if path.rstrip("/") else ""
+        return bool(leaf and "." in leaf)
+
     def bypass(self, start_url: str, max_depth: int = 3) -> List[Finding]:
         findings   : List[Finding] = []
+        if self._is_file_like_url(start_url):
+            console.print(f"  [dim]↳ Skip recursive 403 (file-like path): {start_url}[/dim]")
+            return findings
         # BFS queue: (url, depth)
         bfs_queue  = [(start_url, 0)]
 
@@ -5747,8 +5759,7 @@ class Recursive403Bypasser:
 
             parsed = urllib.parse.urlparse(url)
             path   = parsed.path
-            leaf   = path.rstrip("/").rsplit("/", 1)[-1] if path.rstrip("/") else ""
-            is_file_like_path = bool(leaf and "." in leaf and not path.endswith("/"))
+            is_file_like_path = self._is_file_like_url(url)
 
             # ── 1. Baseline ───────────────────────────────────────────
             bl      = self.client.get(url)
@@ -5876,7 +5887,7 @@ class Recursive403Bypasser:
                                             child_resp["body"][:300], depth,
                                             ai_result=ai_result))
 
-                            elif child_status == 403 and child_url not in self._visited:
+                            elif child_status == 403 and child_url not in self._visited and not self._is_file_like_url(child_url):
                                 # RECURSIVE — 403 child also added to queue!
                                 bfs_queue.append((child_url, depth + 1))
                                 console.print(f"  [dim]  ↳ 403 child queued (depth {depth+1}): {child_url}[/dim]")
@@ -6938,8 +6949,12 @@ class PentestPipeline:
                 if ep.url not in seen_forbidden and self.client.get(ep.url).get("status") == 403:
                     seen_forbidden.add(ep.url)
                     forbidden_urls.append(ep.url)
-            console.print(f"  [dim]Queued {len(forbidden_urls)} forbidden roots for recursive bypass[/dim]")
-            for url in forbidden_urls[:30]:
+            recursive_roots = [u for u in forbidden_urls if not r403_bypasser._is_file_like_url(u)]
+            skipped_file_like = len(forbidden_urls) - len(recursive_roots)
+            console.print(f"  [dim]Queued {len(recursive_roots)} forbidden roots for recursive bypass[/dim]")
+            if skipped_file_like:
+                console.print(f"  [dim]Skipped {skipped_file_like} file-like 403 paths for recursive bypass[/dim]")
+            for url in recursive_roots[:30]:
                 console.print(f"  [dim]→ Recursive bypass: {url}[/dim]")
                 bypass_hits = r403_bypasser.bypass(url, max_depth=3)
                 all_findings.extend(bypass_hits)

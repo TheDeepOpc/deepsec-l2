@@ -210,7 +210,17 @@ class PentestPipeline:
         analyzed_count = 0
         skipped_non_200 = 0
         skipped_non_html = 0
+        skipped_route_stop = 0
         forced_search_urls = set()
+        route_state = {}
+
+        def _route_key(url: str) -> str:
+            path = (urllib.parse.urlparse(url).path or "/").strip()
+            if not path:
+                return "/"
+            segs = [s for s in path.strip("/").split("/") if s]
+            normalized = [":id" if re.fullmatch(r"\d+", s) else s.lower() for s in segs]
+            return "/" + "/".join(normalized)
 
         def _extract_search_params(html: str) -> list[str]:
             names = []
@@ -224,6 +234,15 @@ class PentestPipeline:
             return list(dict.fromkeys(names))[:8]
 
         for ep in page_candidates:
+            route_key = _route_key(ep.url)
+            state = route_state.setdefault(route_key, {"low_value": 0, "stopped": False, "reason": ""})
+            if state["stopped"]:
+                skipped_route_stop += 1
+                console.print(
+                    f"  [dim]AI stop: {ep.url[:70]}  reason={state['reason']}[/dim]"
+                )
+                continue
+
             resp = self.client.get(ep.url)
             if resp.get("status") != 200:
                 skipped_non_200 += 1
@@ -261,6 +280,22 @@ class PentestPipeline:
                 ep.score += 35
 
             page_type = analysis.get("page_type", "unknown")
+            is_numeric_leaf = bool(re.search(r"/\d+/?$", urllib.parse.urlparse(ep.url).path or ""))
+            low_value_page = (
+                analysis.get("risk", "Info") in ("Info", "Low")
+                and page_type in ("static", "dashboard", "unknown")
+                and len(search_inputs) <= 1
+                and is_numeric_leaf
+            )
+            if low_value_page:
+                state["low_value"] += 1
+                if state["low_value"] >= 3 and not state["stopped"]:
+                    state["stopped"] = True
+                    state["reason"] = "repetitive numeric-content pages; oddiy yangilik/deep content deb to'xtatildi"
+                    console.print(
+                        f"  [dim yellow]AI route-stop: {route_key} — {state['reason']}[/dim yellow]"
+                    )
+
             console.print(
                 f"  [dim]AI page: {ep.url[:70]}  type={page_type} "
                 f"risk={analysis.get('risk','Info')} search_inputs={len(search_inputs)}[/dim]"
@@ -282,7 +317,8 @@ class PentestPipeline:
 
         console.print(
             f"[green]✓ Page analysis: analyzed {analyzed_count} HTML pages, "
-            f"skipped_non_200={skipped_non_200}, skipped_non_html={skipped_non_html}[/green]"
+            f"skipped_non_200={skipped_non_200}, skipped_non_html={skipped_non_html}, "
+            f"skipped_route_stop={skipped_route_stop}[/green]"
         )
 
         for aw in crawler.auth_wall_pages:
