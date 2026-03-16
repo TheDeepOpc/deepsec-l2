@@ -714,7 +714,7 @@ class ReconEngine:
         """AI selects the highest-priority target from multiple HTTP targets."""
         prompt = f"""Multiple HTTP targets found on {result.target_input}.
 Targets: {json.dumps(result.http_targets, indent=2)}
-Open ports: {json.dumps([{{'port':p['port'],'service':p['service'],'version':p['version'][:40]}} for p in result.open_ports], indent=2)}
+Open ports: {json.dumps([{'port': p['port'], 'service': p['service'], 'version': str(p.get('version', ''))[:40]} for p in result.open_ports], indent=2)}
 WAF: {result.waf}
 Tech: {list(result.tech_stack.keys())[:10]}
 
