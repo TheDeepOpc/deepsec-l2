@@ -49,4 +49,4 @@ print(f"  cascade_percent: {result3['cascade_percent']:.1%}")
 print(f"  should_halt: {result3['should_halt']}")
 print(f"  reason: {result3['reason']}\n")
 
-print("✅ CascadeDetector tests completed successfully!")
+print("[PASS] CascadeDetector tests completed successfully!")

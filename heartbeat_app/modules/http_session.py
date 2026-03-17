@@ -1,6 +1,6 @@
 from .base import *
 from typing import Any, Dict, List, Optional, Set, Tuple, NamedTuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import ssl
 import http.cookiejar
@@ -11,6 +11,7 @@ import re
 import hashlib
 import time
 import collections
+import queue
 
 # Constants for HTTP operations and crawling
 DEFAULT_TIMEOUT = 30
@@ -28,6 +29,80 @@ class BaselineFingerprint(NamedTuple):
     headers_sig: str
     word_count: int
     error_strings: List[str]
+
+@dataclass
+class SmartFuzzProfile:
+    """Adaptive baseline profile used to filter soft-404 and noise responses."""
+    base_url: str
+    probe_results: List[Dict[str, Any]] = field(default_factory=list)
+    filter_codes: List[int] = field(default_factory=list)
+    filter_sizes: List[int] = field(default_factory=list)
+    filter_words: List[int] = field(default_factory=list)
+    filter_lines: List[int] = field(default_factory=list)
+    filter_hashes: List[str] = field(default_factory=list)
+    match_codes: List[int] = field(default_factory=lambda: [200, 201, 204, 301, 302, 307])
+    tolerance_bytes: int = 20
+    ai_explanation: str = ""
+    recursive: bool = True
+    depth: int = 2
+
+    def _join_ints(self, values: List[int]) -> str:
+        clean = []
+        for value in values or []:
+            try:
+                clean.append(str(int(value)))
+            except (TypeError, ValueError):
+                continue
+        return ",".join(dict.fromkeys(clean))
+
+    def ffuf_filter_args(self) -> str:
+        args = []
+        if self.filter_codes:
+            args.append(f"-fc {self._join_ints(self.filter_codes)}")
+        if self.filter_sizes:
+            args.append(f"-fs {self._join_ints(self.filter_sizes)}")
+        if self.filter_words:
+            args.append(f"-fw {self._join_ints(self.filter_words)}")
+        if self.filter_lines:
+            args.append(f"-fl {self._join_ints(self.filter_lines)}")
+        return " ".join(args)
+
+    def gobuster_filter_args(self) -> str:
+        args = []
+        if self.filter_sizes:
+            args.append(f"--exclude-length {self._join_ints(self.filter_sizes)}")
+        if self.filter_codes:
+            args.append(f"-s {self._join_ints(self.match_codes or [200, 201, 204, 301, 302, 307])}")
+            args.append(f"-b {self._join_ints(self.filter_codes)}")
+        return " ".join(args)
+
+    def wfuzz_filter_args(self) -> str:
+        args = []
+        if self.filter_codes:
+            args.append(f"--hc {self._join_ints(self.filter_codes)}")
+        if self.filter_sizes:
+            args.append(f"--hs {self._join_ints(self.filter_sizes)}")
+        if self.filter_words:
+            args.append(f"--hw {self._join_ints(self.filter_words)}")
+        if self.filter_lines:
+            args.append(f"--hl {self._join_ints(self.filter_lines)}")
+        return " ".join(args) if args else "--hc 404"
+
+    def summary(self) -> str:
+        parts = []
+        if self.filter_codes:
+            parts.append(f"codes={self.filter_codes}")
+        if self.filter_sizes:
+            parts.append(f"sizes={self.filter_sizes}")
+        if self.filter_words:
+            parts.append(f"words={self.filter_words}")
+        if self.filter_lines:
+            parts.append(f"lines={self.filter_lines}")
+        parts.append(f"tol={int(self.tolerance_bytes or 0)}")
+        parts.append(f"depth={int(self.depth or 0)}")
+        if self.recursive:
+            parts.append("recursive")
+        return ", ".join(parts)
 
 @dataclass
 class SessionContext:

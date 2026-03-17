@@ -61,11 +61,11 @@ def test_http_https_downgrade():
     has_http = any(t["url"].startswith("http://") for t in recon.http_targets)
     has_https = any(t["url"].startswith("https") for t in recon.http_targets)
     
-    print(f"✓ Test 1 (HTTP+HTTPS downgrade risk):")
+    print(f"[TEST] Test 1 (HTTP+HTTPS downgrade risk):")
     print(f"  has_http={has_http}, has_https={has_https}")
-    print(f"  Expected: Both True → Finding generated")
+    print(f"  Expected: Both True -> Finding generated")
     assert has_http and has_https, "Should detect both HTTP and HTTPS"
-    print(f"  Result: ✅ PASS\n")
+    print(f"  Result: [PASS]\n")
 
 def test_https_only():
     """Test: HTTPS-only (secure)"""
@@ -82,11 +82,11 @@ def test_https_only():
     has_http = any(t["url"].startswith("http://") for t in recon.http_targets)
     has_https = any(t["url"].startswith("https") for t in recon.http_targets)
     
-    print(f"✓ Test 2 (HTTPS-only, no downgrade risk):")
+    print(f"[TEST] Test 2 (HTTPS-only, no downgrade risk):")
     print(f"  has_http={has_http}, has_https={has_https}")
-    print(f"  Expected: HTTP=False, HTTPS=True → No downgrade finding")
+    print(f"  Expected: HTTP=False, HTTPS=True -> No downgrade finding")
     assert not has_http and has_https, "Should not alert on HTTPS-only"
-    print(f"  Result: ✅ PASS\n")
+    print(f"  Result: [PASS]\n")
 
 def test_http_only():
     """Test: HTTP-only (insecure)"""
@@ -103,11 +103,11 @@ def test_http_only():
     has_http = any(t["url"].startswith("http://") for t in recon.http_targets)
     has_https = any(t["url"].startswith("https") for t in recon.http_targets)
     
-    print(f"✓ Test 3 (HTTP-only, sensitive data risk):")
+    print(f"[TEST] Test 3 (HTTP-only, sensitive data risk):")
     print(f"  has_http={has_http}, has_https={has_https}")
-    print(f"  Expected: HTTP=True, HTTPS=False → Finding for unencrypted transmission")
+    print(f"  Expected: HTTP=True, HTTPS=False -> Finding for unencrypted transmission")
     assert has_http and not has_https, "Should detect HTTP-only service"
-    print(f"  Result: ✅ PASS\n")
+    print(f"  Result: [PASS]\n")
 
 def test_finding_structure():
     """Test: Finding dataclass structure"""
@@ -132,17 +132,17 @@ def test_finding_structure():
         tool="protocol_check",
     )
     
-    print(f"✓ Test 4 (Finding structure validation):")
+    print(f"[TEST] Test 4 (Finding structure validation):")
     print(f"  title={finding.title[:40]}...")
     print(f"  risk={finding.risk}, confidence={finding.confidence}%")
     assert finding.risk in ("Critical", "High", "Medium", "Low", "Info"), "Risk level invalid"
     assert 0 <= finding.confidence <= 100, "Confidence must be 0-100"
-    print(f"  Result: ✅ PASS\n")
+    print(f"  Result: [PASS]\n")
 
 if __name__ == "__main__":
-    print("╔════════════════════════════════════════════════════════════╗")
-    print("║  HTTP Protocol Security Detection Tests                    ║")
-    print("╚════════════════════════════════════════════════════════════╝\n")
+    print("=" * 60)
+    print("  HTTP Protocol Security Detection Tests")
+    print("=" * 60 + "\n")
     
     try:
         test_http_https_downgrade()
@@ -150,9 +150,9 @@ if __name__ == "__main__":
         test_http_only()
         test_finding_structure()
         
-        print("╔════════════════════════════════════════════════════════════╗")
-        print("║  ✅ All protocol security tests PASSED!                    ║")
-        print("╚════════════════════════════════════════════════════════════╝")
+        print("=" * 60)
+        print("  [PASS] All protocol security tests passed")
+        print("=" * 60)
     except AssertionError as e:
-        print(f"\n❌ Test failed: {e}")
+        print(f"\n[FAIL] Test failed: {e}")
         exit(1)

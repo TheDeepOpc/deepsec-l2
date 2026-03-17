@@ -36,6 +36,7 @@ except ImportError:
 MAX_URLS = 120
 MIN_CONFIDENCE = 70
 BASELINE_REPEATS = 2
+MAX_WORKERS = 4
 
 
 def temp_file(name: str) -> str:
