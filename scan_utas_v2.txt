@@ -118,3 +118,18 @@ legitimate discoveries that differ from this baseline.
   тЬУ 200 http://utas.uz/robots.txt (1679 bytes)
   ЁЯФТ 403 http://utas.uz/wp-config.php тАФ added to bypass queue
   ЁЯФТ 403 http://utas.uz/wp-config.php.bak тАФ added to bypass queue
+  Found 2 restricted paths тЖТ probing bypasses...
+  Probing children of 2 forbidden paths...
+    тЬЧ NOT BAC: http://utas.uz/wp-config.php.bak/../ тАФ public_content (html) | 
+The response body contains a complete public website with DOCTYPE, html, head, 
+b
+    тЬЧ NOT BAC: http://utas.uz/wp-config.php/../ тАФ static_asset (css) | Body 
+contains CSS selectors, properties, and rules тАФ this is a stylesheet
+тЬУ Crawl done тАФ 118 endpoints, 81 forbidden paths, 0 bypass candidates
+Site technology: {'lang': 'unknown', 'server': 'cloudflare', 'framework': 
+'unknown', 'cms': 'unknown'}
+
+тФБтФБ PARAMETER DISCOVERY тФБтФБ
+тЬУ 118 endpoints enriched
+
+тФБтФБ PAGE ANALYSIS тФБтФБ
