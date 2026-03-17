@@ -717,7 +717,7 @@ class PentestPipeline:
             # Predict vulnerabilities for each endpoint
             try:
                 resp = self.client.get(ep.url)
-                risk_profile = self.predict_vulnerabilities_advanced(
+                risk_profile = self._predict_vulnerabilities_advanced(
                     ep, resp.get("body", ""), "detected_tech"
                 )
                 ep.predicted_risk = risk_profile.risk_score

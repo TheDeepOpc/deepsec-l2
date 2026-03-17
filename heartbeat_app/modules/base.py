@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import datetime
 import hashlib
 import json
 import os
@@ -37,6 +38,48 @@ MAX_URLS = 120
 MIN_CONFIDENCE = 70
 BASELINE_REPEATS = 2
 MAX_WORKERS = 4
+
+
+@dataclass
+class Endpoint:
+    """Discovered endpoint with metadata used across crawler/fuzzer/pipeline."""
+    url: str
+    method: str = "GET"
+    params: Dict[str, Any] = field(default_factory=dict)
+    body_type: str = "form"
+    discovered_by: str = "crawler"
+    depth: int = 0
+    score: float = 0.0
+    status: Optional[int] = None
+
+
+@dataclass
+class Finding:
+    """Normalized vulnerability object used by all modules and reporters."""
+    owasp_id: str
+    owasp_name: str
+    title: str
+    risk: str
+    confidence: int
+    url: str
+    method: str
+    param: str
+    payload: str
+    evidence: str
+    baseline_diff: str
+    tool_output: str
+    request_raw: str
+    response_raw: str
+    exploit_cmd: str
+    remediation: str
+    confirmed: bool = False
+    tool: str = ""
+    oob: bool = False
+    fp_filtered: bool = False
+    suppression_reason: str = ""
+    verification_reason: str = ""
+    chain: List[str] = field(default_factory=list)
+    timestamp: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 
 
 def temp_file(name: str) -> str:
