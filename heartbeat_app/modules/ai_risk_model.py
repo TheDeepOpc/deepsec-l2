@@ -273,10 +273,13 @@ class EndpointPrioritizer:
         r"/category/\w+", r"/archive/\d{4}",
     ]
 
+    def __init__(self, ai_engine: "AIEngine"):
+        self.ai = ai_engine
+
     def prioritize(self, endpoints: List[Dict], tech_stack: str) -> List[Dict]:
         """
-        Score and rank endpoints by testability and risk.
-        Returns endpoints sorted by priority for fuzzing.
+        Ranks endpoints based on a 7-factor scoring model, including
+        semantic path analysis and tech stack context.
         """
         scored = []
 
