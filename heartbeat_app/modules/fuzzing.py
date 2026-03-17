@@ -123,7 +123,7 @@ class KaliToolRunner:
             fuzz_url = f"{base}/FUZZ"
 
         # ffuf JSON output via -o and -of json
-        out_file = f"/tmp/ffuf_result_{hashlib.md5(base_url.encode()).hexdigest()[:8]}.json"
+        out_file = temp_file(f"ffuf_result_{hashlib.md5(base_url.encode()).hexdigest()[:8]}.json")
 
         cmd = (
             f"ffuf -u '{fuzz_url}' -w '{wordlist}' "
@@ -168,7 +168,7 @@ class KaliToolRunner:
 
         auth         = self._auth_opts("gobuster")
         filter_args  = profile.gobuster_filter_args()
-        out_file     = f"/tmp/gobuster_{hashlib.md5(base_url.encode()).hexdigest()[:8]}.txt"
+        out_file     = temp_file(f"gobuster_{hashlib.md5(base_url.encode()).hexdigest()[:8]}.txt")
 
         cmd = (
             f"gobuster dir -u '{base_url}' -w '{wordlist}' "
@@ -1566,7 +1566,7 @@ class NucleiRunner:
         if session.jwt_token:
             auth_flags += f" -H 'Authorization: Bearer {session.jwt_token}'"
 
-        out_file = "/tmp/nuclei_mega_out.txt"
+        out_file = temp_file("nuclei_mega_out.txt")
         cmd = (f"nuclei -u '{target}' -tags '{','.join(tags)}' "
                f"-severity critical,high,medium -silent -timeout 8 "
                f"-o '{out_file}' {auth_flags}")

@@ -1,11 +1,13 @@
 from .base import *
-from docxtpl import DocxTemplate, InlineImage
-from docx.shared import Mm
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt
 from .domain_analyzer import get_whois_data
 import datetime
 import collections
+import hashlib
+import json
 import re
-from pathlib import Path
 
 class Reporter:
     def __init__(self, target: str, graph: "EndpointGraph"):

@@ -2,6 +2,15 @@ from .base import *
 from typing import Any, Dict, List, Optional, Set, Tuple, NamedTuple
 from dataclasses import dataclass
 from pathlib import Path
+import ssl
+import http.cookiejar
+import urllib.request
+import urllib.parse
+import json
+import re
+import hashlib
+import time
+import collections
 
 # Constants for HTTP operations and crawling
 DEFAULT_TIMEOUT = 30
@@ -19,6 +28,22 @@ class BaselineFingerprint(NamedTuple):
     headers_sig: str
     word_count: int
     error_strings: List[str]
+
+@dataclass
+class SessionContext:
+    """Session state for HTTP requests (cookies, tokens, headers)."""
+    cookies: Dict[str, str] = None
+    jwt_token: Optional[str] = None
+    csrf_token: Optional[str] = None
+    headers: Optional[Dict[str, str]] = None
+    role: str = "anonymous"
+    logged_in: bool = False
+    
+    def __post_init__(self):
+        if self.cookies is None:
+            self.cookies = {}
+        if self.headers is None:
+            self.headers = {}
 
 class HTTPClient:
     def __init__(self, session: "SessionContext", timeout: int = DEFAULT_TIMEOUT):
@@ -1727,4 +1752,4 @@ class EndpointGraph:
     def stats(self) -> dict:
         return {"endpoints": len(self.nodes), "params": len(self.params), "flows": len(self.flows)}
 
-__all__ = ['HTTPClient', 'RiskScorer', 'RoleContext', 'SessionManager', 'Crawler', 'ParamDiscoverer', 'BaselineEngine', 'EndpointGraph']
+__all__ = ['BaselineFingerprint', 'SessionContext', 'HTTPClient', 'RiskScorer', 'RoleContext', 'SessionManager', 'Crawler', 'ParamDiscoverer', 'BaselineEngine', 'EndpointGraph']

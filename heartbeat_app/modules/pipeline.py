@@ -1,15 +1,41 @@
 from .base import *
 from typing import List, Dict, Optional, Any
+from types import SimpleNamespace
 from .wordlists import AIWordlistSelector as ModuleAIWordlistSelector
-from .http_session import HTTPClient, SessionManager, Crawler, ParamDiscoverer, BaselineEngine
+from .http_session import HTTPClient, SessionManager, SessionContext, Crawler, ParamDiscoverer, BaselineEngine, EndpointGraph, DEFAULT_TIMEOUT
 from .fuzzing import KaliToolRunner, OWASPFuzzEngine, NucleiRunner
-from .ai import FPFilter, Correlator
+from .ai import AIEngine, FPFilter, Correlator
 from .ai_exploiter import IntelligentPayloadGenerator, MultiStageAttackChainer, WildcardWAFEvader
 from .ai_risk_model import VulnerabilityPredictor, EndpointPrioritizer, BehavioralAnalyzer
 from .vuln_explainer import VulnerabilityExplainer
+from .recon import OOBClient, ReconEngine
+# Get console from engine, or create a simple fallback
+from .. import engine as _engine
+console = getattr(_engine, "console", None)
+
+# Create a simple console if not available
+if console is None:
+    try:
+        from rich.console import Console
+        console = Console()
+    except ImportError:
+        # Fallback to print if rich is not available
+        class SimpleConsole:
+            def print(self, *args, **kwargs):
+                print(*args)
+        console = SimpleConsole()
+
+# Define BANNER if not available
+BANNER = """
+=============================================================
+          DeepSec - AI Pentesting Framework
+                    Version 7.0
+=============================================================
+"""
 
 class PentestPipeline:
     def __init__(self, args):
+        from .http_session import SessionContext
         self.args    = args
         self.session = SessionContext()
         self.client  = HTTPClient(self.session, timeout=DEFAULT_TIMEOUT)
@@ -802,10 +828,13 @@ class PentestPipeline:
                 ["upload","file","image","avatar","import","attach","media"])]
             if upload_eps:
                 console.print(f"\n[cyan]━━ FILE UPLOAD ATTACK ━━[/cyan]")
-                uploader = FileUploadAttacker(self.client, self.ai)
-                for ep in upload_eps[:5]:
-                    upload_hits = uploader.attack(ep.url, site_tech)
-                    all_findings.extend(upload_hits)
+                if FileUploadAttacker is None:
+                    console.print("  [dim yellow]вљ  FileUploadAttacker unavailable in modular build[/dim yellow]")
+                else:
+                    uploader = FileUploadAttacker(self.client, self.ai)
+                    for ep in upload_eps[:5]:
+                        upload_hits = uploader.attack(ep.url, site_tech)
+                        all_findings.extend(upload_hits)
         else:
             console.print(f"\n[dim]  File upload attack skipped (--no-upload)[/dim]")
 
@@ -814,9 +843,13 @@ class PentestPipeline:
                      getattr(self.session, "jwt_in_response", ""))
         if jwt_token:
             console.print(f"\n[cyan]━━ JWT ATTACK ━━[/cyan]")
-            jwt_attacker = JWTAttacker(self.client, self.oob)
-            jwt_hits     = jwt_attacker.attack(jwt_token, enriched[:30])
-            all_findings.extend(jwt_hits)
+            if JWTAttacker is None:
+                console.print("  [dim yellow]вљ  JWTAttacker unavailable in modular build[/dim yellow]")
+                jwt_hits = []
+            else:
+                jwt_attacker = JWTAttacker(self.client, self.oob)
+                jwt_hits = jwt_attacker.attack(jwt_token, enriched[:30])
+                all_findings.extend(jwt_hits)
             console.print(f"[green]✓ JWT: {len(jwt_hits)} findings[/green]")
 
         # ── WebSocket test ─────────────────────────────────────────────────
@@ -824,10 +857,13 @@ class PentestPipeline:
                   ep.url.startswith(("ws://","wss://"))]
         if ws_eps:
             console.print(f"\n[cyan]━━ WEBSOCKET TEST ━━[/cyan]")
-            ws_tester = WebSocketTester(self.ai)
-            for ep in ws_eps[:3]:
-                ws_hits = ws_tester.test(ep.url)
-                all_findings.extend(ws_hits)
+            if WebSocketTester is None:
+                console.print("  [dim yellow]вљ  WebSocketTester unavailable in modular build[/dim yellow]")
+            else:
+                ws_tester = WebSocketTester(self.ai)
+                for ep in ws_eps[:3]:
+                    ws_hits = ws_tester.test(ep.url)
+                    all_findings.extend(ws_hits)
 
         # ── MitmProxy Interceptor — Burp Suite style analysis ──────────
         if getattr(self.args, "intercept", False) and HAS_MITMPROXY:
@@ -955,7 +991,15 @@ class PentestPipeline:
             console.print(f"  [dim]Evasion techniques: {', '.join(evasion['techniques'][:3])}[/dim]")
         
         # Step 3: Identify zero-day patterns
-        zero_days = self.vuln_predictor.identify_zero_day_patterns(self.graph.endpoints, all_findings)
+        graph_endpoints = [
+            SimpleNamespace(
+                url=node.get("url", ""),
+                params=node.get("params", {}) or {},
+                status=node.get("status"),
+            )
+            for node in self.graph.nodes.values()
+        ]
+        zero_days = self.vuln_predictor.identify_zero_day_patterns(graph_endpoints, all_findings)
         if zero_days:
             console.print(f"[yellow]⚠ {len(zero_days)} potential zero-day pattern(s) detected[/yellow]")
             for zday in zero_days[:2]:

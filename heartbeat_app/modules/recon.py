@@ -1,5 +1,21 @@
 from typing import List, Set, Dict, Optional, Tuple
 from .base import *
+import threading
+
+# Get console from engine, or create a simple fallback
+from .. import engine as _engine
+console = getattr(_engine, "console", None)
+
+# Create a simple console if not available
+if console is None:
+    try:
+        from rich.console import Console
+        console = Console()
+    except ImportError:
+        class SimpleConsole:
+            def print(self, *args, **kwargs):
+                print(*args)
+        console = SimpleConsole()
 
 class ReconResult:
     target_input:  str          # user-provided input
@@ -49,7 +65,7 @@ class ReconEngine:
         Main recon method.
         target_input: "example.com", "192.168.1.1", "http://app.local", "10.0.2.2:5000"
         """
-        console.print(f"\n[cyan]━━ RECON ━━[/cyan]")
+        console.print(f"\n[cyan]== RECON ==[/cyan]")
 
         # 1. Parse input
         host, port_hint, is_ip, has_scheme = self._parse_input(target_input)
@@ -108,7 +124,7 @@ class ReconEngine:
 
         return result
 
-    # ── 1. Input parsing ─────────────────────────────────────────────────────
+    # -- 1. Input parsing -----------------------------------------------------
     def _parse_input(self, raw: str) -> tuple:
         """
         Returns: (host, port_hint, is_ip, has_scheme)
@@ -144,7 +160,7 @@ class ReconEngine:
         is_ip = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host))
         return host, port_hint, is_ip, has_scheme
 
-    # ── 2. DNS ────────────────────────────────────────────────────────────────
+    # -- 2. DNS ----------------------------------------------------------------
     def _resolve(self, host: str) -> tuple:
         """Returns IP, PTR, hostname list."""
         import socket
@@ -165,14 +181,14 @@ class ReconEngine:
 
         # Try hostname lookup via nmap
         if shutil.which("nmap") and ip:
-            r = _run_cmd(f"nmap -sn --dns-servers 8.8.8.8 {ip} 2>/dev/null | grep 'Nmap scan'", timeout=10)
+            r = _run_cmd(f"nmap -sn --dns-servers 8.8.8.8 {ip}", timeout=10)
             m = re.search(r"\(([^)]+)\)", r.get("output",""))
             if m and m.group(1) not in hostnames:
                 hostnames.append(m.group(1))
 
         return ip or host, hostnames
 
-    # ── 3. nmap ───────────────────────────────────────────────────────────────
+    # -- 3. nmap ---------------------------------------------------------------
     def _nmap_scan(self, host: str, port_hint: int = None) -> tuple:
         """
         Port scan with nmap.
@@ -196,18 +212,20 @@ class ReconEngine:
             port_spec   = f"--top-ports 1000 -p {extra_ports}"
             console.print(f"  [dim]  nmap: scanning top-1000 + web ports on {host}...[/dim]")
 
+        out_file = temp_file(f"nmap_{hashlib.md5(host.encode()).hexdigest()[:8]}.txt")
+
         cmd = (
             f"nmap -sV --version-intensity 5 "
             f"-p {port_spec if port_hint else ','.join(str(p) for p in self.WEB_PORTS)} "
             f"--open -T4 --script=http-title,http-headers,banner "
-            f"-oN /tmp/nmap_{hashlib.md5(host.encode()).hexdigest()[:8]}.txt "
+            f"-oN '{out_file}' "
             f"{host}"
         ) if port_hint else (
             f"nmap -sV --version-intensity 5 "
             f"--top-ports 200 "
             f"-p {','.join(str(p) for p in self.WEB_PORTS)} "
             f"--open -T4 --script=http-title,http-headers,banner "
-            f"-oN /tmp/nmap_{hashlib.md5(host.encode()).hexdigest()[:8]}.txt "
+            f"-oN '{out_file}' "
             f"{host}"
         )
 
@@ -272,7 +290,7 @@ class ReconEngine:
             "web" in service
         )
 
-    # ── 4. HTTP targets ────────────────────────────────────────────────────
+    # -- 4. HTTP targets ----------------------------------------------------
     def _build_http_targets(self, host: str, ip: str, open_ports: list,
                             port_hint: int, has_scheme: bool,
                             original_input: str) -> list:
@@ -347,7 +365,7 @@ class ReconEngine:
         except Exception:
             return False
 
-    # ── 5. WAF ────────────────────────────────────────────────────────────────
+    # -- 5. WAF ----------------------------------------------------------------
     def _detect_waf(self, url: str) -> str:
         if shutil.which("wafw00f"):
             r = _run_cmd(f"wafw00f '{url}' -a 2>/dev/null", timeout=30)
@@ -379,7 +397,7 @@ class ReconEngine:
             pass
         return "unknown"
 
-    # ── 6. whatweb ────────────────────────────────────────────────────────────
+    # -- 6. whatweb ------------------------------------------------------------
     def _whatweb(self, url: str) -> tuple:
         if not shutil.which("whatweb"):
             return {}, ""
@@ -396,7 +414,7 @@ class ReconEngine:
             console.print(f"  [dim]  Tech: {', '.join(list(tech.keys())[:8])}[/dim]")
         return tech, out
 
-    # ── 7. Subdomain discovery ────────────────────────────────────────────────
+    # -- 7. Subdomain discovery ------------------------------------------------
     def _subdomain_discovery(self, domain: str) -> list:
         subs = set()
 
@@ -434,7 +452,7 @@ class ReconEngine:
             console.print(f"  [dim]  Subdomains: {result[:5]}{'...' if len(result)>5 else ''}[/dim]")
         return result
 
-    # ── 8. AI prioritization ─────────────────────────────────────────────────
+    # -- 8. AI prioritization -------------------------------------------------
     def _ai_prioritize(self, result: "ReconResult") -> list:
         """AI selects the highest-priority target from multiple HTTP targets."""
         prompt = f"""Multiple HTTP targets found on {result.target_input}.
@@ -511,7 +529,7 @@ class OOBClient:
                     data = json.loads(line)
                     if data.get("domain"):
                         self.domain = data["domain"]
-                        console.print(f"  [green]✓ OOB domain: {self.domain}[/green]")
+                        console.print(f"  [green]* OOB domain: {self.domain}[/green]")
                         t = threading.Thread(target=self._reader, daemon=True)
                         t.start()
                         return True
@@ -595,7 +613,7 @@ class MitmProxyInterceptor:
         Active analysis of endpoints (replaces Burp Proxy + Repeater).
         Sends each request and AI analyzes the response.
         """
-        console.print(f"[cyan]━━ MITMPROXY AI INTERCEPTOR ━━[/cyan]")
+        console.print(f"[cyan]== MITMPROXY AI INTERCEPTOR ==[/cyan]")
         console.print(f"  [dim]Analyzing {len(endpoints)} endpoints with AI interception...[/dim]")
 
         for ep in endpoints[:100]:
@@ -607,7 +625,7 @@ class MitmProxyInterceptor:
         # Cross-flow analysis
         self._cross_flow_analysis()
 
-        console.print(f"  [green]✓ Interceptor: {len(self.findings)} findings from "
+        console.print(f"  [green]* Interceptor: {len(self.findings)} findings from "
                       f"{len(self.flow_log)} analyzed flows[/green]")
         return self.findings
 

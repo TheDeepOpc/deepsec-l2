@@ -2,10 +2,13 @@
 import argparse
 import datetime
 
+from heartbeat_app import core
 from heartbeat_app.menu import run_main_menu
 from heartbeat_app.runtime import make_args, run_pentest
 from heartbeat_app.modules.reporting import Reporter
-from heartbeat_app.modules.pipeline import PentestPipeline
+from heartbeat_app.modules.ai import AIEngine
+from heartbeat_app.modules.http_session import EndpointGraph
+from heartbeat_app.modules.recon import ReconEngine
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -66,25 +69,19 @@ def main() -> None:
     findings = run_pentest(runtime_args)
 
     if args.generate_docx_report and findings is not None:
-        # We need the pipeline object to get the tech_stack and graph
-        # Re-creating it is not ideal, but it's the simplest way for now
-        pipeline = PentestPipeline(runtime_args)
+        tech_stack = {}
+        try:
+            tech_stack = ReconEngine(AIEngine()).run(runtime_args.target).tech_stack
+        except Exception as exc:
+            core.console.print(f"[yellow]DOCX tech fingerprint skipped: {exc}[/yellow]")
 
-        # The tech stack is determined during the recon phase of the pipeline
-        # We assume the pipeline has run and populated the necessary info
-        # In a real scenario, we'd get this from the completed pipeline run
-        tech_stack = pipeline.recon_engine.run(runtime_args.target).tech_stack
-
-        reporter = Reporter(runtime_args.target, pipeline.graph)
+        reporter = Reporter(runtime_args.target, EndpointGraph())
 
         report_filename = f"pentest_report_{runtime_args.target.replace('http://', '').replace('https://', '').replace('.', '_')}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-        output_path = (pipeline.report_dir / report_filename).as_posix()
-        
-        template_path = "report_settings/report_template.docx"
-        logo_path = "report_settings/logo.png"
+        output_path = (core.REPORT_DIR / report_filename).as_posix()
 
         print(f"\n[bold green]Generating DOCX report to {output_path}...[/bold green]")
-        reporter.generate_docx_report(findings, tech_stack, output_path, template_path, logo_path)
+        reporter.generate_docx_report(findings, tech_stack, output_path)
 
 
 if __name__ == "__main__":

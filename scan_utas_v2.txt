@@ -313,3 +313,185 @@ to built-in minimal payloads.
 Install: sudo apt install seclists
     тЪа No system wordlist for 'ssrf' тАФ using built-in fallback (10 payloads). 
 Install: sudo apt install seclists
+    тЪа No system wordlist for 'lfi' тАФ using built-in fallback (14 payloads). 
+Install: sudo apt install seclists
+
+тФБтФБ NUCLEI CVE SCAN тФБтФБ
+тЬУ Nuclei: 0 findings
+
+тФБтФБ RECURSIVE 403 BYPASS тФБтФБ
+  Queued 82 forbidden roots for recursive bypass
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php
+  тЖ│ Skip recursive 403 (file-like path): http://utas.uz/wp-config.php
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak
+  тЖ│ Skip recursive 403 (file-like path): http://utas.uz/wp-config.php.bak
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/
+    тЬЧ path skip: http://utas.uz/wp-config.php.bak//.. тАФ public_content (html) |
+The response body contains a complete HTML page with: (1) DO
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/.;/
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak//
+    тЬЧ path skip: http://utas.uz/wp-config.php.bak///.. тАФ public_content (html) 
+| The response body contains a complete HTML page with DOCTYPE
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/api
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/backup
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/config
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/config.json
+  тЖ│ Skip recursive 403 (file-like path): 
+http://utas.uz/wp-config.php.bak/config.json
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/config.php
+  тЖ│ Skip recursive 403 (file-like path): 
+http://utas.uz/wp-config.php.bak/config.php
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/dashboard
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/data
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/debug
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/delete
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/edit
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/env
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/export
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/get
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/index
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/index.html
+  тЖ│ Skip recursive 403 (file-like path): 
+http://utas.uz/wp-config.php.bak/index.html
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/index.php
+  тЖ│ Skip recursive 403 (file-like path): 
+http://utas.uz/wp-config.php.bak/index.php
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/info
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/internal
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/list
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/logs
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/manage
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/management
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/panel
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/private
+  тЖТ Recursive bypass: http://utas.uz/wp-config.php.bak/report
+тЬУ 403 bypass: 0 findings
+
+тФБтФБ FILE UPLOAD ATTACK тФБтФБ
+
+тФБтФБ CORRELATOR тФБтФБ
+
+тФБтФБ FP FILTER тФБтФБ
+    Dedup: 734 duplicate findings removed, 110 unique
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is not evidence of broken access control. The server
+simply redirected the PUT request - this is normal behavior (HTTP redirect, 
+HTTPS redirect, or method override). No sensitive data or unauthorized access 
+demonstrated. Without following the redirect or proving actual PUT execution 
+with data modification, there's no vulnerability.
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is not evidence of Broken Access Control. The 
+finding shows PUT returns 301 vs baseline 200, but a 301 is just a standard 
+nginx redirect - it does not indicate unauthorized access to protected 
+resources. No actual sensitive data was exposed or accessed. For BAC, tool must
+prove the attacker accessed restricted content/functionality, not just trigger 
+a redirect.
+      Confidence: 55% тЖТ 10%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is legitimate server behavior, not a vulnerability. 
+No sensitive data exposed, no proof of actual unauthorized access or data 
+modification. A redirect response does not indicate Broken Access Control.
+      Confidence: 55% тЖТ 10%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is not evidence of PUT method acceptance or access 
+control bypass. The response is a standard nginx redirect page with no 
+sensitive data, admin functionality, or protected resources. A 301 Moved 
+Permanently response simply indicates the server redirected the request - it 
+does not prove the PUT method was processed or that any access control was 
+bypassed. No actual protected data (admin UI, user records, configs, API keys) 
+is present in the response.
+      Confidence: 55% тЖТ 10%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: Response is a standard 301 redirect (nginx), not an access 
+control bypass. No sensitive data or protected resources accessed. The 301 
+simply redirects to a canonical URL (likely HTTPS redirect). Baseline 
+difference of 200тЖТ301 proves the endpoint is still protected/redirecting, not 
+that PUT is accepted.
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is not evidence of broken access control. The 
+finding shows a standard HTTP redirect (301 Moved Permanently) for PUT method, 
+not successful access to protected resources. No sensitive data, admin UI, or 
+protected functionality was accessed. This is normal redirect behavior (likely 
+HTTP to HTTPS or URL canonicalization). The baseline diff (200 vs 301) only 
+shows different response codes, not exploitability.
+    FP removed: Missing security headers (5 issues)
+      Reason: Missing security headers is an informational hardening 
+recommendation, not an exploitable vulnerability. The response shows Cloudflare
+is handling the server (Server: cloudflare), which manages security headers at 
+the CDN level. No evidence of actual exploitation or concrete impact (e.g., no 
+vulnerable page context where clickjacking could be demonstrated). Risk should 
+be Info/Medium, not High.
+      Confidence: 90% тЖТ 30%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: Response is 301 redirect, not successful PUT acceptance. No 
+evidence of actual data modification or protected resource access. The 301 
+could be normal redirect behavior (HTTPS, trailing slash, location change). No 
+sensitive data exposed.
+      Confidence: 55% тЖТ 15%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is not a successful access control bypass. No 
+sensitive data exposed - response is just a generic nginx redirect page. 
+Baseline diff (200 vs 301) only shows redirect behavior, not actual 
+unauthorized access to protected resources. No evidence of exploitability.
+      Confidence: 55% тЖТ 10%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: URL /robots.txt is a static text file. The 301 response is a 
+standard redirect, not evidence of PUT method execution. No protected data 
+accessed - just a generic nginx redirect page.
+      Confidence: 55% тЖТ 10%
+    FP removed: Missing security headers (5 issues)
+      Reason: Security headers (HSTS, CSP, X-Frame-Options) are not applicable 
+or expected on robots.txt files - this is a static text file for search engine 
+crawlers, not an HTML page. These headers protect HTML pages from clickjacking,
+XSS, and enforce HTTPS - concepts irrelevant to robots.txt. The tool is 
+checking the wrong resource type for security headers that should be evaluated 
+on the main HTML pages or server configuration, not on static text files.
+      Confidence: 90% тЖТ 25%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect response does not indicate PUT method vulnerability.
+The server simply returned a standard HTTP redirect (301 Moved Permanently) for
+the PUT request. No actual protected data, admin UI, or sensitive functionality
+was accessed or demonstrated. The baseline (200) vs PUT (301) diff only shows 
+normal redirect behavior, not broken access control.
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is not evidence of broken access control. PUT 
+returns 301 (redirect) vs baseline 200 - this is normal server behavior for 
+method handling, not a vulnerability. No actual protected data accessed, no 
+admin functionality reached, no sensitive content in response body. Just a 
+standard nginx redirect.
+      Confidence: 55% тЖТ 15%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: Static PDF file - URL ends with .pdf (static document), 301 is 
+standard redirect, no sensitive data exposed
+    FP removed: Missing security headers (5 issues)
+      Reason: Finding incorrectly applies HTML security headers (CSP, 
+X-Frame-Options) to a PDF file. These headers are not meaningful for static 
+binary resources like PDFs which cannot execute JavaScript or be clickjacked. 
+HSTS is a server-level header that should be checked on the root domain, not 
+individual resources. No evidence the server actually lacks these headers at 
+the appropriate level.
+      Confidence: 90% тЖТ 20%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: Static PDF file (narxlar.pdf) - URL ends with .pdf, which is a 
+static asset extension. The 301 response is just a redirect, not actual file 
+content exposure. No sensitive data returned.
+    FP removed: Missing security headers (5 issues)
+      Reason: The URL is a static PDF file (Content-Type: application/pdf), not
+an HTML page. Security headers like CSP, HSTS, and X-Frame-Options are designed
+to protect HTML responses with potential JavaScript execution, form 
+submissions, or iframe embedding. For PDF files, these headers have no security
+relevance - the browser's PDF viewer handles the file, not the web page's 
+execution context. Additionally, HSTS is typically enforced at the 
+domain/server level via header preload, not on individual resourc
+      Confidence: 90% тЖТ 25%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: 301 redirect is not evidence of PUT method acceptance - server is
+redirecting rather than processing PUT. No sensitive data access or actual 
+method handling demonstrated.
+      Confidence: 55% тЖТ 10%
+    FP removed: HTTP Method PUT accepted unexpectedly
+      Reason: Response is a standard 301 Moved Permanently redirect page from 
+nginx with no sensitive data. The baseline shows 200тЖТ301 status change, which 
+is normal server behavior (likely redirect to HTTPS or trailing slash). No 
+evidence of actual protected resource access or broken access control - just a 
+standard HTTP redirect.

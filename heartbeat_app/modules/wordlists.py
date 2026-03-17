@@ -508,7 +508,7 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
             ],
         }
         items = BUILTIN_FALLBACKS.get(category, ["test"])
-        path = Path(f"/tmp/pentest_ai_fallback_{category}.txt")
+        path = Path(temp_file(f"pentest_ai_fallback_{category}.txt"))
         path.write_text("\n".join(items))
         if category not in AIWordlistSelector._fallback_warned:
             AIWordlistSelector._fallback_warned.add(category)

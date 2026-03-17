@@ -105,6 +105,9 @@ def run_jwt_attack(target: str, jwt_token: str, model: str = "", output: str = "
     args = make_args(target=target, model=model, output=output)
     apply_runtime_options(args)
     pipeline = core.PentestPipeline(args)
+    if core.JWTAttacker is None:
+        core.console.print("[yellow]JWT attacker is unavailable in this modular build.[/yellow]")
+        return []
     attacker = core.JWTAttacker(pipeline.client, pipeline.oob)
     findings = attacker.attack(jwt_token, [{"url": target}])
     core.console.print(f"\n[bold]JWT Results:[/bold] {len(findings)} findings")
@@ -116,6 +119,9 @@ def run_jwt_attack(target: str, jwt_token: str, model: str = "", output: str = "
 def run_websocket_test(ws_url: str, model: str = ""):
     args = make_args(model=model)
     apply_runtime_options(args)
+    if core.WebSocketTester is None:
+        core.console.print("[yellow]WebSocket tester is unavailable in this modular build.[/yellow]")
+        return []
     tester = core.WebSocketTester(core.AIEngine())
     findings = tester.test(ws_url)
     core.console.print(f"\n[bold]WebSocket Results:[/bold] {len(findings)} findings")

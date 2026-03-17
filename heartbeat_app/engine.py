@@ -1,33 +1,130 @@
-"""Direct engine source import with backward-compatible private exports.
+"""Runtime compatibility layer for module-based builds.
 
-This module provides backward compatibility by attempting to load engine_combined,
-but gracefully handles cases where it's not available (e.g., when only modules/ is present).
+This module replaces the old ``engine_combined`` dependency with a small
+runtime shim that exposes the symbols expected by ``heartbeat_app.modules``.
 """
 
-# Try to import engine_combined for backward compatibility
-_engine_combined = None
+from __future__ import annotations
+
+import shlex
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
 try:
-	from . import engine_combined as _engine_combined
-	from .engine_combined import *
+    from rich.console import Console
+
+    console = Console()
+    HAS_RICH = True
 except ImportError:
-	# engine_combined.py not available - using modules/ instead
-	# Provide minimal compatibility shims
-	pass
+    HAS_RICH = False
 
-# Provide compatibility exports
-_run_cmd = None
-_print_tools_status = None
-_ollama = None
+    class _PlainConsole:
+        def print(self, *args: Any, **kwargs: Any) -> None:
+            text = " ".join(str(arg) for arg in args)
+            safe = text.encode("ascii", errors="replace").decode("ascii")
+            print(safe)
 
-if _engine_combined is not None:
-	_run_cmd = getattr(_engine_combined, "_run_cmd", None)
-	_print_tools_status = getattr(_engine_combined, "_print_tools_status", None)
-	_ollama = getattr(_engine_combined, "_ollama", None)
+    console = _PlainConsole()
 
-# Export all public symbols
-__all__ = [name for name in globals() if not name.startswith("_")] + [
-	"_run_cmd",
-	"_print_tools_status",
-	"_ollama",
+try:
+    import ollama as _ollama
+
+    HAS_OLLAMA = True
+except ImportError:
+    _ollama = None
+    HAS_OLLAMA = False
+
+try:
+    import mitmproxy  # noqa: F401
+
+    HAS_MITMPROXY = True
+except ImportError:
+    HAS_MITMPROXY = False
+
+
+OLLAMA_HOST = "http://127.0.0.1:11434"
+MODEL_NAME = "llama3.1:8b"
+REPORT_DIR = Path("pentest_reports")
+REPORT_DIR.mkdir(exist_ok=True, parents=True)
+DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DeepSec/7.0"
+
+
+def _normalize_command(command: str) -> str:
+    """Translate simple POSIX redirections into something PowerShell tolerates."""
+    return command.replace("2>/dev/null", " 2>$null")
+
+
+def _run_cmd(command: str, timeout: int = 60, check: bool = False) -> dict[str, Any]:
+    """Run shell command and return a stable dict contract used across modules."""
+    prepared = _normalize_command(command)
+    completed = subprocess.run(
+        prepared,
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+    )
+    output = (completed.stdout or "") + (completed.stderr or "")
+    result = {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "output": output.strip(),
+        "command": prepared,
+    }
+    if check and completed.returncode != 0:
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            prepared,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        )
+    return result
+
+
+run_cmd = _run_cmd
+
+
+def _print_tools_status() -> None:
+    console.print("\n[cyan]━━ TOOLS STATUS ━━[/cyan]")
+    for tool in (
+        "nmap",
+        "ffuf",
+        "gobuster",
+        "sqlmap",
+        "nuclei",
+        "nikto",
+        "whatweb",
+        "wafw00f",
+        "subfinder",
+        "amass",
+    ):
+        state = "installed" if shutil.which(tool) else "missing"
+        color = "green" if state == "installed" else "yellow"
+        console.print(f"  [{color}]{tool}: {state}[/{color}]")
+
+
+print_tools_status = _print_tools_status
+
+
+def shell_join(parts: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+__all__ = [
+    "console",
+    "HAS_RICH",
+    "HAS_OLLAMA",
+    "HAS_MITMPROXY",
+    "OLLAMA_HOST",
+    "MODEL_NAME",
+    "REPORT_DIR",
+    "DEFAULT_UA",
+    "_ollama",
+    "_run_cmd",
+    "run_cmd",
+    "_print_tools_status",
+    "print_tools_status",
+    "shell_join",
 ]
-
