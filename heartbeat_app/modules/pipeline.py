@@ -320,7 +320,7 @@ class PentestPipeline:
                     continue
                 # Root-relative child paths must always resolve from target root,
                 # not from the current page path (prevents /login/transfer style artifacts).
-                child_url = target.rstrip("/") + child
+                child_url = urllib.parse.urljoin(target.rstrip("/") + '/', child.lstrip('/'))
                 if not child_url.startswith(target):
                     continue
                 if child_url in crawler.visited:
@@ -355,9 +355,7 @@ class PentestPipeline:
             console.print(f"  [dim]  AI: suggests {len(children)} child path(s) to probe[/dim]")
 
             for child in children[:8]:
-                if not str(child).startswith("/"):
-                    continue
-                child_url = self.args.target.rstrip("/") + child
+                child_url = urllib.parse.urljoin(self.args.target.rstrip("/") + '/', child.lstrip('/'))
                 if child_url in crawler.visited:
                     continue
 

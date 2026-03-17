@@ -1,0 +1,1 @@
+This is a binary DOCX file that will serve as the template for generating reports. It contains all the static text, formatting, headers, footers, and Jinja2-style placeholders based on the user's provided design. The placeholders will be filled in by the `docxtpl` library.
