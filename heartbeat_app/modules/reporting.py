@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 class Reporter:
-    def __init__(self, target: str, graph: EndpointGraph):
+    def __init__(self, target: str, graph: "EndpointGraph"):
         self.target = target
         self.graph  = graph
         self.scan_log: list[dict] = []  # Scan process logs
@@ -22,7 +22,7 @@ class Reporter:
             "details": details or {},
         })
 
-    def generate(self, findings: list[Finding]) -> str:
+    def generate(self, findings: list["Finding"]) -> str:
         ts     = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         by_risk= collections.defaultdict(list)
         suppressed = []
@@ -81,7 +81,7 @@ class Reporter:
                     lines.append(f"- Evidence: {f.evidence}")
         return "\n".join(lines)
 
-    def _build_finding_report(self, f: Finding) -> dict:
+    def _build_finding_report(self, f: "Finding") -> dict:
         """Creates a complete, thorough report for a single finding."""
         report = {
             "id": hashlib.md5(f"{f.title}{f.url}{f.param}".encode()).hexdigest()[:12],
@@ -123,7 +123,7 @@ class Reporter:
             report["exploitation"]["oob_confirmed"] = True
         return report
 
-    def _verification_reason(self, f: Finding) -> str:
+    def _verification_reason(self, f: "Finding") -> str:
         """Human-readable reason for why a finding is confirmed or not."""
         explicit_reason = str(getattr(f, "verification_reason", "") or "").strip()
         if explicit_reason:
@@ -157,7 +157,7 @@ class Reporter:
 
         return "Not confirmed: evidence did not meet verification criteria."
 
-    def _vuln_description(self, f: Finding) -> str:
+    def _vuln_description(self, f: "Finding") -> str:
         """Full explanation of what the vulnerability consists of."""
         descs = {
             "A01": "Broken Access Control — the server does not properly validate user permissions. "
@@ -171,7 +171,7 @@ class Reporter:
         }
         return descs.get(f.owasp_id, f"OWASP {f.owasp_id} — {f.owasp_name}")
 
-    def _impact_description(self, f: Finding) -> str:
+    def _impact_description(self, f: "Finding") -> str:
         """What an attacker CAN DO through this vulnerability."""
         if "BAC" in f.title or "Access Control" in f.title or "bypass" in f.title.lower():
             return ("An attacker can gain unauthorized access to protected pages, view admin panels, "
@@ -195,7 +195,7 @@ class Reporter:
             return "Unexpected HTTP methods are accepted — data modification/deletion is possible."
         return "This vulnerability can be exploited by an attacker to compromise the target system."
 
-    def _attack_scenario(self, f: Finding) -> str:
+    def _attack_scenario(self, f: "Finding") -> str:
         """Explains a concrete attack scenario."""
         if "X-Forwarded-For" in f.title:
             return ("1. Attacker adds 'X-Forwarded-For: 127.0.0.1' header to the request\n"
@@ -217,7 +217,7 @@ class Reporter:
                     "3. When the correct password is found — account is compromised")
         return f"PoC buyrug'ini ishga tushiring va natijani kuzating: {f.exploit_cmd}"
 
-    def save(self, findings: list[Finding]) -> Path:
+    def save(self, findings: list["Finding"]) -> Path:
         ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         safe = re.sub(r'[^\w.]', '_', self.target)
 
@@ -283,7 +283,7 @@ class Reporter:
         console.print(f"   📄 Full Report:  {md_path}")
         return md_path
 
-    def generate_docx_report(self, findings: list[Finding], tech_stack: dict, output_path: str):
+    def generate_docx_report(self, findings: list["Finding"], tech_stack: dict, output_path: str):
         """Generates a formal .docx penetration testing report based on a template."""
         document = Document()
 

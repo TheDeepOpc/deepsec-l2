@@ -1,5 +1,7 @@
 from .base import *
 from .route_analyzer import RouteAnalyzer # <-- YANGI IMPORT
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Any
 import json
 import time
 
@@ -96,14 +98,14 @@ class Recursive403Bypasser:
         {"X-Rewrite-URL":             "PLACEHOLDER"},
     ]
 
-    def __init__(self, client: HTTPClient, ai: AIEngine, wl_selector: "AIWordlistSelector"):
+    def __init__(self, client: "HTTPClient", ai: AIEngine, wl_selector: "AIWordlistSelector"):
         self.client      = client
         self.ai          = ai
         self.wl_selector = wl_selector
         self._visited    : Set[str] = set()
 
-    def bypass(self, start_url: str, max_depth: int = 3) -> List[Finding]:
-        findings   : List[Finding] = []
+    def bypass(self, start_url: str, max_depth: int = 3) -> List["Finding"]:
+        findings   : List["Finding"] = []
         # BFS queue: (url, depth)
         bfs_queue  = [(start_url, 0)]
 
@@ -255,7 +257,7 @@ class Recursive403Bypasser:
         return findings
 
     def _make_finding(self, title, url, path, payload, exploit, resp, depth,
-                      ai_result: dict = None) -> Finding:
+                      ai_result: dict = None) -> "Finding":
         """
         Creates a Finding. If AI result exists — evidence and confidence
         are taken from AI. confirmed is True only if AI confirmed.
@@ -297,11 +299,11 @@ class Recursive403Bypasser:
         )
 
 class FPFilter:
-    def __init__(self, ai: AIEngine, client: HTTPClient):
+    def __init__(self, ai: AIEngine, client: "HTTPClient"):
         self.ai     = ai
         self.client = client
 
-    def filter(self, findings: list[Finding]) -> list[Finding]:
+    def filter(self, findings: list["Finding"]) -> list["Finding"]:
         # Step 0: Deduplication — merge duplicate findings
         findings = self._deduplicate(findings)
 
@@ -371,7 +373,7 @@ class FPFilter:
             passed.append(f)
         return passed
 
-    def _deduplicate(self, findings: list[Finding]) -> list[Finding]:
+    def _deduplicate(self, findings: list["Finding"]) -> list["Finding"]:
         """Merges findings with the same title+url+param combination.
         Keeps the one with highest confidence."""
         seen: dict[str, Finding] = {}
@@ -390,7 +392,7 @@ class FPFilter:
             console.print(f"  [dim]  Dedup: {removed} duplicate findings removed, {len(deduped)} unique[/dim]")
         return deduped
 
-    def _quick_fp(self, f: Finding) -> bool:
+    def _quick_fp(self, f: "Finding") -> bool:
         has_supporting_signal = bool((f.evidence or "").strip() or (f.tool_output or "").strip())
         if (f.baseline_diff == "{}" or not f.baseline_diff) and not has_supporting_signal:
             return True
@@ -430,7 +432,7 @@ class FPFilter:
             return True
         return False
 
-    def _looks_like_generic_sqli_fp(self, f: Finding, title: str, ev: str, out: str, body: str) -> bool:
+    def _looks_like_generic_sqli_fp(self, f: "Finding", title: str, ev: str, out: str, body: str) -> bool:
         if "sql" not in title and "sql injection" not in ev and f.tool != "sqlmap":
             return False
 
@@ -449,7 +451,7 @@ class FPFilter:
         ])
         return generic_only or f.tool in ("auth_sqli_probe", "sqlmap")
 
-    def _looks_like_input_validation_fp(self, f: Finding, title: str, ev: str, out: str, body: str) -> bool:
+    def _looks_like_input_validation_fp(self, f: "Finding", title: str, ev: str, out: str, body: str) -> bool:
         combined = "\n".join([title, ev, out, body])
         if "injection" not in title and f.owasp_id != "A03":
             return False
@@ -464,7 +466,7 @@ class FPFilter:
         ]
         return not any(marker in combined for marker in strong_exec_markers)
 
-    def _looks_like_generic_lfi_fp(self, f: Finding, title: str, ev: str, out: str, body: str) -> bool:
+    def _looks_like_generic_lfi_fp(self, f: "Finding", title: str, ev: str, out: str, body: str) -> bool:
         if "lfi" not in title and "file inclusion" not in title and "passwd" not in ev:
             return False
 
@@ -480,7 +482,7 @@ class FPFilter:
         weak_name_markers = ["/etc/passwd", "/etc/shadow", "win.ini", ".htpasswd", "/etc/hosts"]
         return any(marker in combined for marker in weak_name_markers)
 
-    def _auto_confirm_by_evidence(self, f: Finding) -> bool:
+    def _auto_confirm_by_evidence(self, f: "Finding") -> bool:
         ev = (f.evidence or "").lower()
         out = (f.tool_output or "").lower()
 
@@ -509,7 +511,7 @@ class Correlator:
     def __init__(self, ai: AIEngine):
         self.ai = ai
 
-    def correlate(self, findings: list[Finding], signals: list[dict]) -> list[Finding]:
+    def correlate(self, findings: list["Finding"], signals: list[dict]) -> list["Finding"]:
         if not signals:
             return findings
         new_findings = []
@@ -545,8 +547,8 @@ class Correlator:
 
         return findings + new_findings
 
-    def _cross_url_correlate(self, findings: list[Finding],
-                              new_findings: list[Finding],
+    def _cross_url_correlate(self, findings: list["Finding"],
+                              new_findings: list["Finding"],
                               signals: list[dict]):
         """Compare signals across different URLs."""
         # If the same parameter is sensitive across different endpoints
@@ -576,8 +578,8 @@ class Correlator:
                     exploit_cmd="", remediation="Apply consistent input validation across all endpoints.",
                 ))
 
-    def _detect_attack_chains(self, findings: list[Finding],
-                               new_findings: list[Finding]):
+    def _detect_attack_chains(self, findings: list["Finding"],
+                               new_findings: list["Finding"]):
         """Detect exploit chains between vulnerabilities."""
         # Group findings by OWASP
         by_owasp = collections.defaultdict(list)

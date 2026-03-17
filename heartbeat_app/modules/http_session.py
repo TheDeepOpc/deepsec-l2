@@ -1,7 +1,27 @@
 from .base import *
+from typing import Any, Dict, List, Optional, Set, Tuple, NamedTuple
+from dataclasses import dataclass
+from pathlib import Path
+
+# Constants for HTTP operations and crawling
+DEFAULT_TIMEOUT = 30
+MAX_WORKERS = 4
+MAX_CRAWL_DEPTH = 3
+
+# Type definitions
+class BaselineFingerprint(NamedTuple):
+    """Fingerprint of baseline response for comparison."""
+    status: int
+    body_len: int
+    body_hash: str
+    title: str
+    timing_avg: float
+    headers_sig: str
+    word_count: int
+    error_strings: List[str]
 
 class HTTPClient:
-    def __init__(self, session: SessionContext, timeout: int = DEFAULT_TIMEOUT):
+    def __init__(self, session: "SessionContext", timeout: int = DEFAULT_TIMEOUT):
         self.session = session
         self.timeout = timeout
         self._ctx    = ssl.create_default_context()
@@ -215,11 +235,11 @@ class RiskScorer:
 class RoleContext:
     name:      str
     client:    "HTTPClient"
-    session:   SessionContext
+    session:   "SessionContext"
     logged_in: bool = False
 
 class SessionManager:
-    def __init__(self, base_client: HTTPClient, ai: "AIEngine"):
+    def __init__(self, base_client: "HTTPClient", ai: "AIEngine"):
         self.base_client = base_client
         self.ai          = ai
         # Keep anonymous role isolated from the mutable main session.
@@ -503,7 +523,7 @@ class Crawler:
             return out
         return resp
 
-    def crawl(self, max_depth: int = MAX_CRAWL_DEPTH, smart_profile=None) -> list[Endpoint]:
+    def crawl(self, max_depth: int = MAX_CRAWL_DEPTH, smart_profile=None) -> list["Endpoint"]:
         console.print(f"\n[bold cyan]━━ CRAWLER STARTED ━━[/bold cyan]")
         self._max_depth = max_depth
         self.smart_profile = smart_profile  # Store for use in filtering
@@ -976,7 +996,7 @@ class Crawler:
                     links.append(url)
         return list(set(links))
 
-    def _extract_forms(self, body: str, base_url: str) -> list[Endpoint]:
+    def _extract_forms(self, body: str, base_url: str) -> list["Endpoint"]:
         endpoints = []
         form_blocks = re.findall(r'<form([^>]*)>(.*?)</form>', body, re.S | re.I)
         for attrs, content in form_blocks:
@@ -1001,7 +1021,7 @@ class Crawler:
             endpoints.append(ep)
         return endpoints
 
-    def _extract_js_endpoints(self, js: str, base: str) -> list[Endpoint]:
+    def _extract_js_endpoints(self, js: str, base: str) -> list["Endpoint"]:
         endpoints = []
         patterns = [
             r'(?:fetch|axios\.(?:get|post|put|delete|patch)|ajax|xhr\.open)\s*\(["\']([^"\']+)["\']',
@@ -1017,7 +1037,7 @@ class Crawler:
                     endpoints.append(ep)
         return endpoints
 
-    def _check_api_schema(self, url: str, body: str, headers: dict) -> list[Endpoint]:
+    def _check_api_schema(self, url: str, body: str, headers: dict) -> list["Endpoint"]:
         endpoints = []
         base = url.rstrip("/")
         schema_paths = [
@@ -1042,7 +1062,7 @@ class Crawler:
                     endpoints.extend(self._graphql_introspect(probe_url))
         return endpoints
 
-    def _parse_openapi(self, body: str, schema_url: str) -> list[Endpoint]:
+    def _parse_openapi(self, body: str, schema_url: str) -> list["Endpoint"]:
         endpoints = []
         try:
             schema = json.loads(body)
@@ -1070,7 +1090,7 @@ class Crawler:
                 endpoints.append(ep)
         return endpoints
 
-    def _graphql_introspect(self, url: str) -> list[Endpoint]:
+    def _graphql_introspect(self, url: str) -> list["Endpoint"]:
         query = '{"query":"{ __schema { queryType { fields { name } } mutationType { fields { name } } } }"}'
         r = self.client.post(url, data=query, extra_headers={"Content-Type": "application/json"})
         endpoints = []
@@ -1088,7 +1108,7 @@ class Crawler:
                 pass
         return endpoints
 
-    def _url_to_endpoint(self, url: str, method: str, depth: int, source: str) -> Endpoint:
+    def _url_to_endpoint(self, url: str, method: str, depth: int, source: str) -> "Endpoint":
         parsed = urllib.parse.urlparse(url)
         params = {}
         for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
@@ -1128,7 +1148,7 @@ class ParamDiscoverer:
         self.client      = client
         self.wl_selector = wl_selector
 
-    def discover(self, ep: Endpoint) -> Endpoint:
+    def discover(self, ep: "Endpoint") -> "Endpoint":
         resp = self.client.get(ep.url) if ep.method == "GET" else \
             self.client.post(ep.url, data=self._normalize_submit_params(ep.params))
         if resp["status"] == 0:
@@ -1179,7 +1199,7 @@ class ParamDiscoverer:
 
         return ep
 
-    def _has_explicit_user_params(self, ep: Endpoint) -> bool:
+    def _has_explicit_user_params(self, ep: "Endpoint") -> bool:
         for key in ep.params:
             prefix = key.split(":", 1)[0] if ":" in key else "query"
             if prefix in ("query", "form", "body", "json", "hidden", "graphql_input"):
@@ -1310,7 +1330,7 @@ class ParamDiscoverer:
             pass
         return params
 
-    def _ffuf_param_discover(self, ep: Endpoint, wordlist: str) -> dict:
+    def _ffuf_param_discover(self, ep: "Endpoint", wordlist: str) -> dict:
         if not wordlist or not Path(wordlist).exists():
             return {}
         fuzz_url = ep.url + ("&" if "?" in ep.url else "?") + "FUZZ=pentestai"
@@ -1507,7 +1527,7 @@ class BaselineEngine:
         return filter_codes, filter_sizes, filter_words, filter_lines
 
 
-    def get(self, ep: Endpoint) -> BaselineFingerprint:
+    def get(self, ep: "Endpoint") -> "BaselineFingerprint":
         key = f"{ep.method}:{ep.url}"
         if key in self._cache:
             return self._cache[key]
@@ -1579,7 +1599,7 @@ class BaselineEngine:
         return (abs(len(body) - self._custom404_fp.body_len) < 50 and
                 self._extract_title(body) == self._custom404_fp.title)
 
-    def _send(self, ep: Endpoint) -> dict:
+    def _send(self, ep: "Endpoint") -> dict:
         if ep.method == "GET":
             r = self.client.get(ep.url)
         else:
@@ -1623,7 +1643,7 @@ class BaselineEngine:
 
         return r
 
-    def _normalize_submit_params(self, ep: Endpoint) -> dict:
+    def _normalize_submit_params(self, ep: "Endpoint") -> dict:
         normalized = {}
         for key, value in ep.params.items():
             if key.startswith(("header:", "path:", "cookie:")):
@@ -1679,7 +1699,7 @@ class EndpointGraph:
         self.roles : list[str]       = []
         self.flows : list[dict]      = []
 
-    def add_endpoint(self, ep: Endpoint):
+    def add_endpoint(self, ep: "Endpoint"):
         key = f"{ep.method}:{ep.url}"
         self.nodes[key] = {
             "url": ep.url, "method": ep.method,
@@ -1689,7 +1709,7 @@ class EndpointGraph:
         for p in ep.params:
             self.params[f"{key}:{p}"] = {"endpoint": key, "param": p, "value": ep.params[p]}
 
-    def add_finding(self, ep: Endpoint, finding: Finding):
+    def add_finding(self, ep: "Endpoint", finding: "Finding"):
         key = f"{finding.method}:{finding.url}"
         if key in self.nodes:
             self.nodes[key].setdefault("findings", []).append({

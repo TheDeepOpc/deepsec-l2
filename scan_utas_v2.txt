@@ -133,3 +133,183 @@ Site technology: {'lang': 'unknown', 'server': 'cloudflare', 'framework':
 тЬУ 118 endpoints enriched
 
 тФБтФБ PAGE ANALYSIS тФБтФБ
+  AI page: http://utas.uz/sus-dev  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/sus-dev  type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/wp-config.php.bak/../  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/wp-config.php/../  type=static risk=Low 
+search_inputs=0
+  AI page: http://utas.uz  type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/faculties/languages?index=3&amp;masters=false  
+type=static risk=Info search_inputs=0
+  AI page: 
+http://utas.uz/faculties/pedagogy-and-psychology?index=1&amp;masters=f  
+type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/faculties/economics?index=0&amp;masters=false  
+type=static risk=Low search_inputs=0
+  AI page: http://utas.uz/news  type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/admission  type=static risk=Info search_inputs=0
+  AI page: 
+http://utas.uz/faculties/information-technology?index=2&amp;masters=fa  
+type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/science  type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/about  type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/partners  type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/contact  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz  type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/student  type=dashboard risk=Medium search_inputs=0
+  AI page: http://utas.uz/  type=static risk=Low search_inputs=0
+  AI page: http://utas.uz/subjects/uzbek-language-and-literature  type=static 
+risk=Info search_inputs=0
+  AI page: 
+http://utas.uz/subjects/philology_and_language_teaching_uzbek_language  
+type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/subjects/philology_and_Language_teaching_english  
+type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/subjects/foreign-language-and-literature  type=static
+risk=Info search_inputs=0
+  AI page: http://utas.uz/subjects/primary-education  type=static risk=Low 
+search_inputs=0
+  AI page: http://utas.uz/subjects/history  type=content risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/technological-education  type=static 
+risk=Info search_inputs=0
+  AI page: http://utas.uz/subjects/preschool-education  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/psychology  type=unknown risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/banking  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/finance  type=dashboard risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/menejment  type=static risk=Low 
+search_inputs=0
+  AI page: http://utas.uz/subjects/economics  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/tourism_and_hospitality  type=static 
+risk=Info search_inputs=0
+  AI page: http://utas.uz/subjects/marketing  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/taxes_and_taxation  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/accounting-and-audit  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/axborot_tizimlari_va_texnologiyalari  
+type=static risk=Info search_inputs=0
+  AI page: http://utas.uz/subjects/software_engineering  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/cyber-security  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/subjects/computer-engineering  type=static risk=Info 
+search_inputs=0
+  AI page: http://utas.uz/partners-all  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/admission  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/faculties/languages?index=3&amp;masters=false  
+type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/about  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/faculties/economics?index=0&amp;masters=false  
+type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/partners  type=static risk=Low search_inputs=0
+  AI page: https://utas.uz/science  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/news  type=unknown risk=Info search_inputs=0
+  AI page: 
+https://utas.uz/faculties/pedagogy-and-psychology?index=1&amp;masters=  
+type=static risk=Info search_inputs=0
+  AI page: 
+https://utas.uz/faculties/information-technology?index=2&amp;masters=f  
+type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/student  type=static risk=Info search_inputs=0
+  AI page: https://utas.uz/contact  type=static risk=Low search_inputs=0
+тЬУ Page analysis: analyzed 52 HTML pages, skipped_non_200=2, 
+skipped_non_html=64, skipped_route_stop=0
+
+тФБтФБ AI PLANNER тФБтФБ
+  Pruned 56 low-value synthetic endpoint(s) before fuzzing
+  Pruned 2 repetitive route duplicate(s) before fuzzing
+тЬУ AI prioritized 126 endpoints
+
+тФБтФБ OWASP FUZZING тФБтФБ
+
+тФБтФБ AI RISK PREDICTION & PRIORITIZATION тФБтФБ
+тЬУ Endpoints re-prioritized by AI vulnerability prediction
+  тЦ╢ GET http://utas.uz/admission (score:0)
+  тЦ╢ GET http://utas.uz/contact (score:0)
+  тЦ╢ GET http://utas.uz/student (score:0)
+  тЦ╢ GET http://utas.uz/news (score:0)
+  тЦ╢ GET http://utas.uz/science (score:0)
+  тЦ╢ GET http://utas.uz/about (score:0)
+  тЦ╢ GET http://utas.uz/partners (score:0)
+  тЦ╢ GET http://utas.uz/sus-dev (score:15)
+  тЦ╢ GET http://utas.uz/robots.txt (score:20)
+  тЦ╢ GET http://utas.uz (score:0)
+  тЦ╢ GET http://utas.uz/faculties/languages?index=3&amp;masters=false (score:0)
+  тЦ╢ GET http://utas.uz/inner_rules.pdf (score:0)
+  тЦ╢ GET http://utas.uz/download/narxlar.pdf (score:0)
+  тЦ╢ GET http://utas.uz/faculties/pedagogy-and-psychology?index=1&amp;masters=f 
+(score:0)
+  тЦ╢ GET http://utas.uz/faculties/economics?index=0&amp;masters=false (score:0)
+  тЦ╢ GET http://utas.uz/_next/static/chunks/main-5963ed8bcfb786637deb.js 
+(score:30)
+  тЦ╢ GET http://utas.uz/manners.pdf (score:0)
+  тЦ╢ GET http://utas.uz/_next/static/chunks/framework-e12e56e0b8a76d261551.js 
+(score:30)
+  тЦ╢ GET http://utas.uz/download/chegirmalar.pdf (score:0)
+  тЦ╢ GET http://utas.uz/faculties/information-technology?index=2&amp;masters=fa 
+(score:0)
+  тЦ╢ GET http://utas.uz/favicon.svg (score:0)
+  тЦ╢ GET https://utas.uz (score:0)
+  тЦ╢ GET http://utas.uz/ (score:0)
+  тЦ╢ GET http://utas.uz/subjects/uzbek-language-and-literature (score:0)
+  тЦ╢ GET http://utas.uz/subjects/philology_and_language_teaching_uzbek_language 
+(score:0)
+  тЦ╢ GET http://utas.uz/subjects/philology_and_Language_teaching_english 
+(score:0)
+  тЦ╢ GET http://utas.uz/subjects/foreign-language-and-literature (score:0)
+  тЦ╢ GET http://utas.uz/subjects/primary-education (score:0)
+  тЦ╢ GET http://utas.uz/subjects/history (score:0)
+  тЦ╢ GET http://utas.uz/subjects/technological-education (score:0)
+  тЦ╢ GET http://utas.uz/subjects/preschool-education (score:0)
+  тЦ╢ GET http://utas.uz/subjects/psychology (score:0)
+  тЦ╢ GET http://utas.uz/subjects/banking (score:0)
+  тЦ╢ GET http://utas.uz/subjects/finance (score:0)
+  тЦ╢ GET http://utas.uz/subjects/menejment (score:0)
+  тЦ╢ GET http://utas.uz/subjects/economics (score:0)
+  тЦ╢ GET http://utas.uz/subjects/tourism_and_hospitality (score:0)
+  тЦ╢ GET http://utas.uz/subjects/marketing (score:0)
+  тЦ╢ GET http://utas.uz/subjects/taxes_and_taxation (score:0)
+  тЦ╢ GET http://utas.uz/subjects/accounting-and-audit (score:0)
+  тЦ╢ GET http://utas.uz/_next/static/chunks/pages/sus-dev-d8aa5dfc38e2b3b5b3a8. 
+(score:15)
+  тЦ╢ GET http://utas.uz/subjects/axborot_tizimlari_va_texnologiyalari (score:0)
+  тЦ╢ GET http://utas.uz/subjects/software_engineering (score:0)
+  тЦ╢ GET http://utas.uz/subjects/cyber-security (score:0)
+  тЦ╢ GET http://utas.uz/subjects/computer-engineering (score:0)
+  тЦ╢ GET http://utas.uz/partners-all (score:0)
+  тЦ╢ GET https://utas.uz/manners.pdf (score:0)
+  тЦ╢ GET https://utas.uz/admission (score:0)
+  тЦ╢ GET https://utas.uz/faculties/languages?index=3&amp;masters=false (score:0)
+  тЦ╢ GET https://utas.uz/about (score:0)
+  тЦ╢ GET https://utas.uz/faculties/economics?index=0&amp;masters=false (score:0)
+  тЦ╢ GET https://utas.uz/download/narxlar.pdf (score:0)
+  тЦ╢ GET https://utas.uz/_next/static/chunks/main-5963ed8bcfb786637deb.js 
+(score:30)
+  тЦ╢ GET https://utas.uz/partners (score:0)
+  тЦ╢ GET https://utas.uz/download/chegirmalar.pdf (score:0)
+  тЦ╢ GET https://utas.uz/science (score:0)
+  тЦ╢ GET https://utas.uz/favicon.svg (score:0)
+  тЦ╢ GET https://utas.uz/_next/static/chunks/framework-e12e56e0b8a76d261551.js 
+(score:30)
+  тЦ╢ GET https://utas.uz/faculties/pedagogy-and-psychology?index=1&amp;masters= 
+(score:0)
+  тЦ╢ GET https://utas.uz/_next/static/chunks/pages/_app-7633067824f046432a45.js 
+(score:30)
+  WordlistScanner: 0 wordlist(s) тАФ 0 categories found, 12 empty: ['lfi', 
+'sqli', 'xss', 'ssti', 'ssrf', 'cmdi', 'dirs', 'params', 'passwords', 
+'usernames', 'api', 'backup']
+  тЪа No system wordlists found. Install: sudo apt install seclists  Falling back
+to built-in minimal payloads.
+    тЪа No system wordlist for 'ssti' тАФ using built-in fallback (8 payloads). 
+Install: sudo apt install seclists
+    тЪа No system wordlist for 'ssrf' тАФ using built-in fallback (10 payloads). 
+Install: sudo apt install seclists

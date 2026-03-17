@@ -1,7 +1,8 @@
 from .base import *
+from typing import Optional, List, Dict, Any
 
 class KaliToolRunner:
-    def __init__(self, session: SessionContext, wl_selector: "AIWordlistSelector"):
+    def __init__(self, session: "SessionContext", wl_selector: "AIWordlistSelector"):
         self.session     = session
         self.wl_selector = wl_selector
 
@@ -375,8 +376,8 @@ class OWASPFuzzEngine:
         'a:1:{s:4:"test";s:4:"ls -la";}',
     ]
 
-    def __init__(self, client: HTTPClient, baseline: BaselineEngine,
-                 kali: KaliToolRunner, ai: AIEngine,
+    def __init__(self, client: "HTTPClient", baseline: "BaselineEngine",
+                 kali: "KaliToolRunner", ai: "AIEngine",
                  wl_selector: "AIWordlistSelector",
                  site_tech: dict = None):
         self.client      = client
@@ -385,11 +386,11 @@ class OWASPFuzzEngine:
         self.ai          = ai
         self.wl_selector = wl_selector
         self.site_tech   = site_tech or {}
-        self.findings    : list[Finding] = []
+        self.findings    : list["Finding"] = []
         self.signals     : list[dict]    = []
         self._lock       = threading.Lock()
 
-    def _build_wl_context(self, ep: Endpoint, param_key: str, category: str) -> dict:
+    def _build_wl_context(self, ep: "Endpoint", param_key: str, category: str) -> dict:
         """
         Collect context for wordlist selection.
         Includes URL, parameter name, technology, server.
@@ -424,7 +425,7 @@ class OWASPFuzzEngine:
             "category":    category,
         }
 
-    def test_endpoint(self, ep: Endpoint) -> list[Finding]:
+    def test_endpoint(self, ep: "Endpoint") -> list["Finding"]:
         base_fp  = self.baseline.get(ep)
         results  = []
         for check_id, cfg in self.OWASP_TOOL_MAP.items():
@@ -438,8 +439,8 @@ class OWASPFuzzEngine:
         return results
 
     def _run_tool(self, check_id: str, tool_name: str,
-                  ep: Endpoint, param_key: str, param_name: str,
-                  base_fp: BaselineFingerprint) -> Optional[Finding]:
+                  ep: "Endpoint", param_key: str, param_name: str,
+                  base_fp: "BaselineFingerprint") -> Optional["Finding"]:
 
         tool_out = {"tool": tool_name, "output": "", "available": True}
 
@@ -625,8 +626,8 @@ class OWASPFuzzEngine:
         return f
 
     # ── Specialized probes ────────────────────────────────────────────────
-    def _idor_probe(self, ep: Endpoint, param_key: str,
-                    base_fp: BaselineFingerprint) -> Optional[Finding]:
+    def _idor_probe(self, ep: "Endpoint", param_key: str,
+                    base_fp: "BaselineFingerprint") -> Optional["Finding"]:
         pname  = param_key.split(":")[-1]
         orig   = ep.params.get(param_key, "1")
         if not str(orig).isdigit():
@@ -664,8 +665,8 @@ class OWASPFuzzEngine:
                     )
         return None
 
-    def _method_switch_probe(self, ep: Endpoint,
-                             base_fp: BaselineFingerprint) -> Optional[Finding]:
+    def _method_switch_probe(self, ep: "Endpoint",
+                             base_fp: "BaselineFingerprint") -> Optional["Finding"]:
         # OPTIONS and HEAD — standard HTTP methods, not bypass
         for method in ["PUT", "DELETE", "PATCH", "TRACE"]:
             r = self.client._request(ep.url, method)
@@ -693,8 +694,8 @@ class OWASPFuzzEngine:
                 )
         return None
 
-    def _auth_header_probe(self, ep: Endpoint, param_key: str,
-                           base_fp: BaselineFingerprint) -> Optional[Finding]:
+    def _auth_header_probe(self, ep: "Endpoint", param_key: str,
+                           base_fp: "BaselineFingerprint") -> Optional["Finding"]:
         bypass_headers = {
             "X-Forwarded-For": "127.0.0.1",
             "X-Real-IP":       "127.0.0.1",
@@ -753,8 +754,8 @@ class OWASPFuzzEngine:
                 )
         return None
 
-    def _header_security_check(self, ep: Endpoint,
-                               base_fp: BaselineFingerprint) -> Optional[Finding]:
+    def _header_security_check(self, ep: "Endpoint",
+                               base_fp: "BaselineFingerprint") -> Optional["Finding"]:
         r = self.client.get(ep.url)
         missing = []
         required = {
@@ -787,7 +788,7 @@ class OWASPFuzzEngine:
             remediation="Add missing security headers to all responses.",
         )
 
-    def _rate_limit_check(self, ep: Endpoint) -> Optional[Finding]:
+    def _rate_limit_check(self, ep: "Endpoint") -> Optional["Finding"]:
         if not any(k in ep.url.lower() for k in ["/login", "/auth", "/signup", "/reset"]):
             return None
         statuses = []
@@ -811,8 +812,8 @@ class OWASPFuzzEngine:
             )
         return None
 
-    def _auth_sqli_probe(self, ep: Endpoint, param_key: str,
-                         param_name: str) -> Optional[Finding]:
+    def _auth_sqli_probe(self, ep: "Endpoint", param_key: str,
+                         param_name: str) -> Optional["Finding"]:
         """Focused SQLi auth-bypass probe for login/auth endpoints."""
         if ep.method != "POST":
             return None
@@ -886,7 +887,7 @@ class OWASPFuzzEngine:
                 )
         return None
 
-    def _jwt_analysis(self, ep: Endpoint) -> Optional[Finding]:
+    def _jwt_analysis(self, ep: "Endpoint") -> Optional["Finding"]:
         jwt = self.client.session.jwt_token
         if not jwt:
             return None
@@ -926,7 +927,7 @@ class OWASPFuzzEngine:
             pass
         return None
 
-    def _ssl_check(self, ep: Endpoint) -> Optional[Finding]:
+    def _ssl_check(self, ep: "Endpoint") -> Optional["Finding"]:
         host = urllib.parse.urlparse(ep.url).netloc.split(":")[0]
         if shutil.which("nmap"):
             r = _run_cmd(f"nmap -p 443 --script ssl-enum-ciphers,ssl-cert {host} -T4 --open", timeout=30)
@@ -952,8 +953,8 @@ class OWASPFuzzEngine:
         return None
 
     # ── XXE Probe ────────────────────────────────────────────────────────────
-    def _xxe_probe(self, ep: Endpoint, param_key: str,
-                   param_name: str, base_fp: BaselineFingerprint) -> Optional[Finding]:
+    def _xxe_probe(self, ep: "Endpoint", param_key: str,
+                   param_name: str, base_fp: "BaselineFingerprint") -> Optional["Finding"]:
         """XML External Entity injection test."""
         xxe_payloads = [
             # Basic file read
@@ -995,8 +996,8 @@ class OWASPFuzzEngine:
         return None
 
     # ── Deserialization Probe ────────────────────────────────────────────────
-    def _deser_probe(self, ep: Endpoint, param_key: str,
-                     param_name: str, base_fp: BaselineFingerprint) -> Optional[Finding]:
+    def _deser_probe(self, ep: "Endpoint", param_key: str,
+                     param_name: str, base_fp: "BaselineFingerprint") -> Optional["Finding"]:
         """A08 Insecure Deserialization — Java/Python/PHP/Node payload test."""
         lang = self.site_tech.get("lang", "unknown")
 
@@ -1087,8 +1088,8 @@ class OWASPFuzzEngine:
         return None
 
     # ── Stored XSS Detection ────────────────────────────────────────────────
-    def _stored_xss_check(self, ep: Endpoint, param_key: str,
-                          param_name: str) -> Optional[Finding]:
+    def _stored_xss_check(self, ep: "Endpoint", param_key: str,
+                          param_name: str) -> Optional["Finding"]:
         """
         Stored XSS — submits payload, then detects it on another page.
         Unlike reflected XSS: payload is stored and returns in a separate request.
@@ -1134,8 +1135,8 @@ class OWASPFuzzEngine:
         return None
 
     # ── Second-Order SQLi ────────────────────────────────────────────────────
-    def _second_order_sqli_check(self, ep: Endpoint, param_key: str,
-                                  param_name: str) -> Optional[Finding]:
+    def _second_order_sqli_check(self, ep: "Endpoint", param_key: str,
+                                  param_name: str) -> Optional["Finding"]:
         """
         Second-order SQLi — payload is stored in one place, executed in another.
         Example: register(username="admin'--") → login → error on profile page.
@@ -1199,7 +1200,7 @@ class OWASPFuzzEngine:
         return None
 
     # ── Helpers ───────────────────────────────────────────────────────────────
-    def _fuzz_request(self, ep: Endpoint, param_key: str,
+    def _fuzz_request(self, ep: "Endpoint", param_key: str,
                       param_name: str, payload: str) -> dict:
         params = dict(ep.params)
         params[param_key] = payload
@@ -1215,7 +1216,7 @@ class OWASPFuzzEngine:
             return self.client.post(ep.url, json_data=clean)
         return self.client.post(ep.url, data=clean)
 
-    def _tool_submit_params(self, ep: Endpoint) -> dict:
+    def _tool_submit_params(self, ep: "Endpoint") -> dict:
         clean = {}
         for key, value in ep.params.items():
             if key.startswith(("header:", "path:", "cookie:")):
@@ -1237,7 +1238,7 @@ class OWASPFuzzEngine:
         qs[param] = value
         return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(qs)))
 
-    def _get_relevant_params(self, ep: Endpoint, param_types: list, check_id: str = "") -> list:
+    def _get_relevant_params(self, ep: "Endpoint", param_types: list, check_id: str = "") -> list:
         if not param_types:
             return []
         relevant = []
@@ -1257,7 +1258,7 @@ class OWASPFuzzEngine:
             relevant.extend(self._fallback_param_keys(ep, check_id))
         return list(dict.fromkeys(relevant))
 
-    def _fallback_param_keys(self, ep: Endpoint, check_id: str) -> list[str]:
+    def _fallback_param_keys(self, ep: "Endpoint", check_id: str) -> list[str]:
         path = urllib.parse.urlparse(ep.url).path.lower()
         candidates = []
 
@@ -1286,7 +1287,7 @@ class OWASPFuzzEngine:
 
         return out[:12]
 
-    def _get_quick_payloads(self, check_id: str, param_key: str = "", ep: Optional[Endpoint] = None) -> list:
+    def _get_quick_payloads(self, check_id: str, param_key: str = "", ep: Optional["Endpoint"] = None) -> list:
         """
         Quick inline payloads — used separately from wordlist tools
         for fast baseline diff checking.
@@ -1325,7 +1326,7 @@ class OWASPFuzzEngine:
         check_id: str,
         param_key: str,
         value: Any,
-        ep: Optional[Endpoint] = None,
+        ep: Optional["Endpoint"] = None,
     ) -> bool:
         name = param_key.split(":")[-1].lower()
         if not check_id:
@@ -1365,7 +1366,7 @@ class OWASPFuzzEngine:
             return True
         return bool(value_s) and bool(re.fullmatch(r"-?\d+(?:\.\d+)?", value_s))
 
-    def _allow_numeric_sqli_param(self, name: str, ep: Optional[Endpoint]) -> bool:
+    def _allow_numeric_sqli_param(self, name: str, ep: Optional["Endpoint"]) -> bool:
         if not ep:
             return False
         path = urllib.parse.urlparse(ep.url).path.lower()
@@ -1501,7 +1502,7 @@ class OWASPFuzzEngine:
 
         return False
 
-    def _should_print_raw_finding(self, f: Finding) -> bool:
+    def _should_print_raw_finding(self, f: "Finding") -> bool:
         title = (f.title or "").lower()
         ev = (f.evidence or "").lower()
         out = (f.tool_output or "").lower()
@@ -1519,13 +1520,13 @@ class OWASPFuzzEngine:
 
         return True
 
-    def _build_request_str(self, ep: Endpoint, param_key: str, payload: str) -> str:
+    def _build_request_str(self, ep: "Endpoint", param_key: str, payload: str) -> str:
         pname = param_key.split(":")[-1]
         if ep.method == "GET":
             return f"GET {ep.url}?{pname}={urllib.parse.quote(payload)} HTTP/1.1\nHost: {urllib.parse.urlparse(ep.url).netloc}"
         return f"POST {ep.url} HTTP/1.1\nHost: {urllib.parse.urlparse(ep.url).netloc}\nContent-Type: application/x-www-form-urlencoded\n\n{pname}={urllib.parse.quote(payload)}"
 
-    def _print_finding(self, f: Finding):
+    def _print_finding(self, f: "Finding"):
         colors = {"Critical":"bold red","High":"red","Medium":"yellow","Low":"cyan","Info":"dim"}
         c = colors.get(f.risk, "white")
         console.print(f"  [{c}][{f.risk}][/{c}] [bold]{f.owasp_id} — {f.title}[/bold] [dim](conf: {f.confidence}%)[/dim]")
@@ -1544,7 +1545,7 @@ class NucleiRunner:
         "cve":"A06","default":"A07","takeover":"A01","jwt":"A02",
     }
 
-    def run(self, target: str, tech: dict, session: SessionContext) -> List[Finding]:
+    def run(self, target: str, tech: dict, session: "SessionContext") -> List["Finding"]:
         if not shutil.which("nuclei"):
             return []
 

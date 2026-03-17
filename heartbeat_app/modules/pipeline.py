@@ -1,4 +1,5 @@
 from .base import *
+from typing import List, Dict, Optional, Any
 from .wordlists import AIWordlistSelector as ModuleAIWordlistSelector
 from .http_session import HTTPClient, SessionManager, Crawler, ParamDiscoverer, BaselineEngine
 from .fuzzing import KaliToolRunner, OWASPFuzzEngine, NucleiRunner
@@ -604,7 +605,7 @@ class PentestPipeline:
             console.print(f"[green]✓ Forced AI search/input tests: {len(forced_eps)} endpoint(s)[/green]")
 
         # Drop low-value synthetic/nested auth endpoints before fuzzing.
-        def _should_prune_low_value(ep: Endpoint) -> bool:
+        def _should_prune_low_value(ep: "Endpoint") -> bool:
             try:
                 path = urllib.parse.urlparse(ep.url).path.lower().strip("/")
             except Exception:
@@ -623,7 +624,7 @@ class PentestPipeline:
                 return True
             return False
 
-        def _planner_route_key(ep: Endpoint) -> str:
+        def _planner_route_key(ep: "Endpoint") -> str:
             parsed = urllib.parse.urlparse(ep.url)
             segs = [s for s in (parsed.path or "/").strip("/").split("/") if s]
             norm_segs = []
@@ -636,7 +637,7 @@ class PentestPipeline:
             query_part = "?" + "&".join(query_names) if query_names else ""
             return f"{ep.method.upper()}:/{'/'.join(norm_segs)}{query_part}"
 
-        def _planner_route_cap(ep: Endpoint, route_key: str) -> int:
+        def _planner_route_cap(ep: "Endpoint", route_key: str) -> int:
             path = (urllib.parse.urlparse(ep.url).path or "").lower()
             if any(token in path for token in ("/search", "/query", "/find")):
                 return 2
@@ -1056,7 +1057,7 @@ class PentestPipeline:
             return None
 
 
-    def _ctf_chain(self, finding: Finding, target: str, tech: dict):
+    def _ctf_chain(self, finding: "Finding", target: str, tech: dict):
         """
         CTF mode: topilgan finding'dan exploitation chain yaratadi.
         AI searches for flag.txt and shows privilege escalation paths.
@@ -1310,7 +1311,7 @@ Return JSON: {{"steps":["step1","step2"],"flag_path":"/root/flag.txt","estimated
 
         return findings
 
-    def _print_summary(self, findings: list[Finding], all_findings: list[Finding] = None):
+    def _print_summary(self, findings: list["Finding"], all_findings: list["Finding"] = None):
         by_risk = collections.defaultdict(list)
         for f in findings:
             by_risk[f.risk].append(f)
@@ -1367,8 +1368,8 @@ Return JSON: {{"steps":["step1","step2"],"flag_path":"/root/flag.txt","estimated
                 for f in suppressed:
                     print(f"    - {f.title}: {f.suppression_reason}")
 
-    def _ai_final_assessment(self, clean: list[Finding],
-                              all_findings: list[Finding],
+    def _ai_final_assessment(self, clean: list["Finding"],
+                              all_findings: list["Finding"],
                               target: str, site_tech: dict):
         """End-of-scan comprehensive security assessment by AI."""
         suppressed = [f for f in all_findings if f.fp_filtered]
@@ -1447,7 +1448,7 @@ Return as plain text (NOT JSON). Write detailed, professional analysis."""
             console.print(f"  [dim]AI assessment error: {e}[/dim]")
             self._fallback_assessment(clean, suppressed)
 
-    def _fallback_assessment(self, clean: list[Finding], suppressed: list[Finding]):
+    def _fallback_assessment(self, clean: list["Finding"], suppressed: list["Finding"]):
         """Heuristic assessment when AI is unavailable."""
         by_risk = collections.defaultdict(list)
         for f in clean:

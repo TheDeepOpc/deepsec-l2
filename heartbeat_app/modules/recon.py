@@ -1,3 +1,4 @@
+from typing import List, Set, Dict, Optional, Tuple
 from .base import *
 
 class ReconResult:
@@ -589,7 +590,7 @@ class MitmProxyInterceptor:
         self._cookies_seen: dict = {}
         self._max_flows = 500
 
-    def run_passive_analysis(self, client: "HTTPClient", endpoints: List["Endpoint"]) -> List[Finding]:
+    def run_passive_analysis(self, client: "HTTPClient", endpoints: List["Endpoint"]) -> List["Finding"]:
         """
         Active analysis of endpoints (replaces Burp Proxy + Repeater).
         Sends each request and AI analyzes the response.
