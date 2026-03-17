@@ -503,9 +503,10 @@ class Crawler:
             return out
         return resp
 
-    def crawl(self, max_depth: int = MAX_CRAWL_DEPTH) -> list[Endpoint]:
+    def crawl(self, max_depth: int = MAX_CRAWL_DEPTH, smart_profile=None) -> list[Endpoint]:
         console.print(f"\n[bold cyan]━━ CRAWLER STARTED ━━[/bold cyan]")
         self._max_depth = max_depth
+        self.smart_profile = smart_profile  # Store for use in filtering
         self._probe_well_known()
         self._q.put((self.base, 0))
         threads = []
@@ -561,6 +562,7 @@ class Crawler:
         response_sizes = []
         response_words = []
         url_size_map = {}  # Track response size for each URL
+        url_status_map = {}  # Track response status for each URL
         
         for path in well_known:
             url = base + path
@@ -573,12 +575,14 @@ class Crawler:
                 console.print(f"  [dim yellow]⚠ auth-safe skip: {url}[/dim yellow]")
                 continue
             
-            # Track size and word count for SPA soft-404 detection
+            # Track size, status, and word count for soft-404 detection
             body_size = len(r.get("body", ""))
             body_words = len(r.get("body", "").split())
+            status = r["status"]
             response_sizes.append(body_size)
             response_words.append(body_words)
             url_size_map[url] = body_size  # Map URL to response size for filtering
+            url_status_map[url] = status  # Map URL to status for pattern matching
             
             with self._lock:
                 self.visited.add(url)
@@ -637,8 +641,42 @@ class Crawler:
                 elif "sitemap" in path:
                     self._parse_sitemap(body, base)
         
-        # Detect and filter SPA soft-404 fake endpoints
-        if response_sizes and len(response_sizes) > 10:
+        # Detect and filter soft-404 fake endpoints using SmartProfile and heuristics
+        # Handle both: SPA (200, small) and custom 404 (404, large) patterns
+        if self.smart_profile and (self.smart_profile.filter_codes or self.smart_profile.filter_sizes):
+            # Use SmartProfile's detected fake patterns
+            clean_endpoints = []
+            removed_count = 0
+            tolerance = getattr(self.smart_profile, 'tolerance_bytes', 20)
+            
+            for ep in self.endpoints:
+                is_fake = False
+                if ep.url in url_size_map:
+                    ep_size = url_size_map[ep.url]
+                    ep_status = url_status_map.get(ep.url, 200)  # default to 200
+                    
+                    # Check if response matches the detected fake pattern
+                    # SmartProfile.filter_codes = [status codes to filter]
+                    # SmartProfile.filter_sizes = [sizes to filter]
+                    if ep_status in self.smart_profile.filter_codes and \
+                       any(abs(ep_size - fs) <= tolerance for fs in self.smart_profile.filter_sizes):
+                        is_fake = True
+                
+                if is_fake:
+                    removed_count += 1
+                else:
+                    clean_endpoints.append(ep)
+            
+            if removed_count > 0:
+                with self._lock:
+                    self.endpoints = clean_endpoints
+                profile_summary = self.smart_profile.summary() if hasattr(self.smart_profile, 'summary') else \
+                    f"codes={self.smart_profile.filter_codes}, sizes={self.smart_profile.filter_sizes}"
+                console.print(f"[yellow]⚠ Soft-404 pattern detected: {profile_summary}[/yellow]")
+                console.print(f"[green]   ✓ Removed {removed_count} fake endpoints[/green]")
+        
+        elif response_sizes and len(response_sizes) > 10:
+            # Fallback: heuristic-based filtering if SmartProfile unavailable
             # If all responses are nearly identical in size, it's likely a SPA with catch-all routing
             size_variance = max(response_sizes) - min(response_sizes)
             most_common_size = max(set(response_sizes), key=response_sizes.count)
@@ -649,7 +687,7 @@ class Crawler:
             
             if fake_pattern_ratio > 0.7 and size_variance <= 10:
                 # This is a fake SPA pattern - filter out matching endpoints
-                console.print(f"[yellow]⚠ SPA soft-404 detected: {fake_pattern_ratio*100:.0f}% of responses are ~{most_common_size} bytes[/yellow]")
+                console.print(f"[yellow]⚠ SPA soft-404 detected (heuristic): {fake_pattern_ratio*100:.0f}% of responses are ~{most_common_size} bytes[/yellow]")
                 
                 # Remove endpoints whose URLs had the fake response size
                 clean_endpoints = []

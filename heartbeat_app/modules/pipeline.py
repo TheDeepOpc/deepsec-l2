@@ -238,10 +238,10 @@ class PentestPipeline:
         baseline.build_custom_404(target)   # legacy compat
         smart_profile = baseline.build_smart_profile(target, self.ai, depth=3)
 
-        # Step 3: Crawl (with technology detection)
+        # Step 3: Crawl (with technology detection, using SmartProfile for soft-404 filtering)
         console.print(f"\n[cyan]━━ CRAWLER ━━[/cyan]")
         crawler   = Crawler(self.client, self.ai, target)
-        endpoints = crawler.crawl(max_depth=3 if self.args.deep else 2)
+        endpoints = crawler.crawl(max_depth=3 if self.args.deep else 2, smart_profile=smart_profile)
         site_tech = crawler.site_tech
         console.print(f"[bold]Site technology:[/bold] {site_tech}")
         for ep in endpoints:

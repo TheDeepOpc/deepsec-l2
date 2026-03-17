@@ -1,0 +1,120 @@
+﻿
+тЦИтЦИтЦИтЦИтЦИтЦИтХЧ тЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтЦИтЦИтЦИтЦИтХЧ тЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧ тЦИтЦИтЦИтЦИтЦИтЦИтХЧ
+тЦИтЦИтХФтХРтХРтЦИтЦИтХЧтЦИтЦИтХФтХРтХРтХРтХРтХЭтЦИтЦИтХФтХРтХРтХРтХРтХЭтЦИтЦИтХФтХРтХРтЦИтЦИтХЧтЦИтЦИтХФтХРтХРтХРтХРтХЭтЦИтЦИтХФтХРтХРтХРтХРтХЭтЦИтЦИтХФтХРтХРтХРтХРтХЭ
+тЦИтЦИтХС  тЦИтЦИтХСтЦИтЦИтЦИтЦИтЦИтХЧ  тЦИтЦИтЦИтЦИтЦИтХЧ  тЦИтЦИтЦИтЦИтЦИтЦИтХФтХЭтЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтЦИтЦИтЦИтХЧ  тЦИтЦИтХС     
+тЦИтЦИтХС  тЦИтЦИтХСтЦИтЦИтХФтХРтХРтХЭ  тЦИтЦИтХФтХРтХРтХЭ  тЦИтЦИтХФтХРтХРтХРтХЭ тХЪтХРтХРтХРтХРтЦИтЦИтХСтЦИтЦИтХФтХРтХРтХЭ  тЦИтЦИтХС     
+тЦИтЦИтЦИтЦИтЦИтЦИтХФтХЭтЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтЦИтЦИтХС     тЦИтЦИтЦИтЦИтЦИтЦИтЦИтХСтЦИтЦИтЦИтЦИтЦИтЦИтЦИтХЧтХЪтЦИтЦИтЦИтЦИтЦИтЦИтХЧ
+тХЪтХРтХРтХРтХРтХРтХЭ тХЪтХРтХРтХРтХРтХРтХРтХЭтХЪтХРтХРтХРтХРтХРтХРтХЭтХЪтХРтХЭ     тХЪтХРтХРтХРтХРтХРтХРтХЭтХЪтХРтХРтХРтХРтХРтХРтХЭ тХЪтХРтХРтХРтХРтХРтХЭ
+ DEEPSEC | proactive DE/EP&ffence matters
+
+               Kali Tools Status               
+тФМтФАтФАтФАтФАтФАтФАтФАтФАтФАтФмтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФмтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФР
+тФВ Tool    тФВ Status     тФВ Purpose              тФВ
+тФЬтФАтФАтФАтФАтФАтФАтФАтФАтФАтФ╝тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФ╝тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФд
+тФВ ffuf    тФВ тЬЧ Missing  тФВ Param/dir fuzzer     тФВ
+тФВ sqlmap  тФВ тЬЧ Missing  тФВ SQL injection        тФВ
+тФВ dalfox  тФВ тЬЧ Missing  тФВ XSS scanner          тФВ
+тФВ commix  тФВ тЬЧ Missing  тФВ Command injection    тФВ
+тФВ wfuzz   тФВ тЬЧ Missing  тФВ Generic fuzzer       тФВ
+тФВ nikto   тФВ тЬЧ Missing  тФВ Web server scanner   тФВ
+тФВ nmap    тФВ тЬУ Found    тФВ Port/service scanner тФВ
+тФВ whatweb тФВ тЬЧ Missing  тФВ Tech fingerprint     тФВ
+тФВ wafw00f тФВ тЬЧ Missing  тФВ WAF detector         тФВ
+тФВ hydra   тФВ тЬЧ Missing  тФВ Brute force          тФВ
+тФФтФАтФАтФАтФАтФАтФАтФАтФАтФАтФ┤тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФ┤тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ
+
+Wordlist Catalog:
+  WordlistScanner: 0 wordlist(s) тАФ 0 categories found, 12 empty: ['lfi', 
+'sqli', 'xss', 'ssti', 'ssrf', 'cmdi', 'dirs', 'params', 'passwords', 
+'usernames', 'api', 'backup']
+  тЪа No system wordlists found. Install: sudo apt install seclists  Falling back
+to built-in minimal payloads.
+  lfi             0 wordlist(s)
+  sqli            0 wordlist(s)
+  xss             0 wordlist(s)
+  ssti            0 wordlist(s)
+  ssrf            0 wordlist(s)
+  cmdi            0 wordlist(s)
+  dirs            0 wordlist(s)
+  params          0 wordlist(s)
+  passwords       0 wordlist(s)
+  usernames       0 wordlist(s)
+  api             0 wordlist(s)
+  backup          0 wordlist(s)
+
+Target input: http://utas.uz
+Mode:   quick
+Deep:   False
+CTF:    False
+
+
+тФБтФБ RECON тФБтФБ
+  Input: host=utas.uz  port_hint=80  is_ip=False  has_scheme=True
+  Resolved: utas.uz -> 104.21.18.46  hostnames=[]
+    nmap: scanning port 80 on 104.21.18.46...
+    nmap: 0 open ports
+    Subdomains: ['admin.utas.uz', 'mail.utas.uz', 'test.utas.uz', 
+'www.utas.uz']
+        Recon: http://utas.uz        
+тФМтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФмтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФР
+тФВ Item               тФВ Value        тФВ
+тФЬтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФ╝тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФд
+тФВ IP                 тФВ 104.21.18.46 тФВ
+тФВ OS                 тФВ unknown      тФВ
+тФВ WAF                тФВ Cloudflare   тФВ
+тФВ Open ports         тФВ 0            тФВ
+тФВ HTTP targets       тФВ 1            тФВ
+тФВ Subdomains         тФВ 4            тФВ
+тФВ Tech stack         тФВ unknown      тФВ
+тФФтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФ┤тФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФАтФШ
+  Primary target: http://utas.uz
+
+тФБтФБ DOMAIN ANALYSIS тФБтФБ
+  тЬУ Domen ma'lumotlari olingan
+    ╨Ф╨╛╨╝╨╡╨╜: utas.uz (www.utas.uz)
+    ╥▓╨╛╨╗╨░╤В╨╕: ╨Р╨║╤В╨╕╨▓
+    ╨в╨░╤К╤А╨╕╤Д: 
+    ╨С╨╕╤А╨╕╨╜╤З╨╕ Ns: ╨Ф╨╛╨╝╨╡╨╜: mustafa.ns.cloudflare.com.
+    ╨а╤Ю╨╣╤Е╨░╤В╨┤╨░╨╜ ╨О╤В╨║╨░╨╖╤Г╨▓╤З╨╕: ╨Ю╨Ю╨Ю ┬лNEW LINE SOLUTIONS┬╗
+    ╨Ш╨║╨║╨╕╨╜╤З╨╕ Ns: ╨Ф╨╛╨╝╨╡╨╜: rihana.ns.cloudflare.com.
+    ╨а╤Ю╨╣╤Е╨░╤В╨┤╨░╨╜ ╨О╤В╨│╨░╨╜ ╨б╨░╨╜╨░: 05.03.2021 ╨│.
+    ╨О╤З╨╕╨╜╤З╨╕ Ns: ╨Ф╨╛╨╝╨╡╨╜: not.defined.
+    ╨д╨░╨╛╨╗╨╕╤П╤В╨╕ ╨в╤Г╨│╨░╨╣╨┤╨╕: 05.03.2036 ╨│.
+    ╨в╤Ю╤А╤В╨╕╨╜╤З╨╕ Ns: ╨Ф╨╛╨╝╨╡╨╜: not.defined.
+    Ns Servers:
+      - aniqlanmadi
+
+тФБтФБ SUBDOMAIN ENUMERATION тФБтФБ
+  тЬУ 4 subdomainlar topilgan
+    - admin.utas.uz
+    - mail.utas.uz
+    - test.utas.uz
+    - www.utas.uz
+
+  тЪа WAF detected: Cloudflare
+    Fuzzing may be blocked/rate-limited. Consider slow mode.
+
+тФБтФБ FINGERPRINTING тФБтФБ
+    SmartProfile: probing 5 random paths at http://utas.uz...
+      /fgrsynylayvb -> 404  size=50000  words=4770  lines=1807  title=
+      /tmuyeqvq.php -> 404  size=50000  words=4770  lines=1807  title=
+      /admin_037848 -> 404  size=50000  words=4770  lines=1807  title=
+      /api/ivjhcgthor -> 404  size=50000  words=4770  lines=1807  title=
+      /yddaep/qdkeim -> 404  size=50000  words=4770  lines=1807  title=
+    SmartProfile ready: fc=[404]  fs=[50000]  fw=[4770]  fl=[1807]
+    AI: All 5 probes returned IDENTICAL responses with same status code (404), 
+size (50000), words (4770), lines (1807), and hash. This is a classic custom 
+404 page pattern. The server returns a consistent error page for any 
+non-existent URL. Filtering all four dimensions (codes, sizes, words, lines) 
+will reject false positives from this standardized error page while capturing 
+legitimate discoveries that differ from this baseline.
+
+тФБтФБ CRAWLER тФБтФБ
+
+тФБтФБ CRAWLER STARTED тФБтФБ
+  Probing 69 well-known paths...
+  Detected tech: {'lang': 'unknown', 'server': 'cloudflare', 'framework': 
+'unknown', 'cms': 'unknown'}
+  тЬУ 200 http://utas.uz/robots.txt (1679 bytes)
+  ЁЯФТ 403 http://utas.uz/wp-config.php тАФ added to bypass queue
+  ЁЯФТ 403 http://utas.uz/wp-config.php.bak тАФ added to bypass queue
