@@ -559,6 +559,8 @@ class Crawler:
 
         # Collect response sizes to detect soft-404 patterns
         response_sizes = []
+        response_words = []
+        url_size_map = {}  # Track response size for each URL
         
         for path in well_known:
             url = base + path
@@ -570,11 +572,16 @@ class Crawler:
             if r.get("auth_state_changed"):
                 console.print(f"  [dim yellow]⚠ auth-safe skip: {url}[/dim yellow]")
                 continue
+            
+            # Track size and word count for SPA soft-404 detection
+            body_size = len(r.get("body", ""))
+            body_words = len(r.get("body", "").split())
+            response_sizes.append(body_size)
+            response_words.append(body_words)
+            url_size_map[url] = body_size  # Map URL to response size for filtering
+            
             with self._lock:
                 self.visited.add(url)
-            
-            # Track response size
-            response_sizes.append(len(r.get("body", "")))
 
             # Tech detection — update from each response
             if not self.site_tech.get("lang") or self.site_tech.get("lang") == "unknown":
@@ -629,6 +636,40 @@ class Crawler:
                     self._parse_robots(body, base)
                 elif "sitemap" in path:
                     self._parse_sitemap(body, base)
+        
+        # Detect and filter SPA soft-404 fake endpoints
+        if response_sizes and len(response_sizes) > 10:
+            # If all responses are nearly identical in size, it's likely a SPA with catch-all routing
+            size_variance = max(response_sizes) - min(response_sizes)
+            most_common_size = max(set(response_sizes), key=response_sizes.count)
+            
+            # Check if >70% of responses have the same size (within ±5 bytes)
+            same_size_count = sum(1 for s in response_sizes if abs(s - most_common_size) <= 5)
+            fake_pattern_ratio = same_size_count / len(response_sizes)
+            
+            if fake_pattern_ratio > 0.7 and size_variance <= 10:
+                # This is a fake SPA pattern - filter out matching endpoints
+                console.print(f"[yellow]⚠ SPA soft-404 detected: {fake_pattern_ratio*100:.0f}% of responses are ~{most_common_size} bytes[/yellow]")
+                
+                # Remove endpoints whose URLs had the fake response size
+                clean_endpoints = []
+                removed_count = 0
+                for ep in self.endpoints:
+                    if ep.url in url_size_map:
+                        # This endpoint was from well_known probing, check if it matches fake pattern
+                        ep_size = url_size_map[ep.url]
+                        if abs(ep_size - most_common_size) <= 5:
+                            # Matches fake pattern - skip this endpoint
+                            removed_count += 1
+                            continue
+                    # Keep endpoints that don't match fake pattern or aren't in url_size_map
+                    clean_endpoints.append(ep)
+                
+                if removed_count > 0:
+                    with self._lock:
+                        self.endpoints = clean_endpoints
+                    console.print(f"[green]   ✓ Removed {removed_count} fake endpoints from SPA soft-404 pattern[/green]")
+
 
     def _parse_robots(self, body: str, base: str):
         for m in re.finditer(r'(?:Disallow|Allow):\s*(/\S*)', body, re.I):
