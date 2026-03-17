@@ -268,6 +268,107 @@ class SmartFuzzProfile:
         return "  ".join(parts) or "no filters"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CASCADE DETECTOR — Halt fuzzing when catch-all redirects detected
+# ─────────────────────────────────────────────────────────────────────────────
+class CascadeDetector:
+    """
+    Detects cascading 301→404 redirect noise from catch-all servers.
+    
+    When a web server redirects unknown paths (301) to a single error page (404),
+    ffuf will generate hundreds of noise hits. This detector:
+    1. Tracks redirect patterns from ffuf results
+    2. Detects when >60% of results follow 301→404 pattern
+    3. Returns halt signal to stop fuzzing an endpoint (cascade detected)
+    """
+    
+    NOISE_THRESHOLD = 0.60  # If >60% of results are 301→404, consider it noise
+    MIN_SAMPLES = 5         # Need at least 5 results to make decision
+    
+    @staticmethod
+    def detect_cascading_redirects(ffuf_results: list) -> dict:
+        """
+        Analyzes ffuf results for cascading redirect patterns.
+        
+        Args:
+            ffuf_results: List of dicts from ffuf JSON output, each with:
+                - "status": HTTP status code
+                - "url": Full URL
+                - Other metadata (size, words, lines)
+        
+        Returns:
+            {
+                "is_cascading": bool,
+                "cascade_percent": float,  # percentage that are 301→404
+                "redirect_count": int,
+                "total_results": int,
+                "should_halt": bool,  # True = stop fuzzing this endpoint
+                "reason": str
+            }
+        """
+        total = len(ffuf_results)
+        
+        if total < CascadeDetector.MIN_SAMPLES:
+            return {
+                "is_cascading": False,
+                "cascade_percent": 0.0,
+                "redirect_count": 0,
+                "total_results": total,
+                "should_halt": False,
+                "reason": f"Need {CascadeDetector.MIN_SAMPLES}+ results to detect cascade"
+            }
+        
+        # Count how many results are 301 status codes
+        redirect_count = sum(1 for r in ffuf_results if r.get("status") == 301)
+        cascade_percent = redirect_count / total if total > 0 else 0.0
+        
+        is_cascading = cascade_percent >= CascadeDetector.NOISE_THRESHOLD
+        should_halt = is_cascading  # Auto-halt when cascade detected
+        
+        reason = ""
+        if is_cascading:
+            reason = (f"Cascading redirects detected: {redirect_count}/{total} results "
+                     f"({cascade_percent:.0%}) are 301→404. This appears to be a catch-all "
+                     f"redirect. Halting fuzzing for this endpoint.")
+        else:
+            reason = (f"Normal redirect pattern: {redirect_count}/{total} results "
+                     f"({cascade_percent:.0%}) are 301s. Below noise threshold ({CascadeDetector.NOISE_THRESHOLD:.0%})")
+        
+        return {
+            "is_cascading": is_cascading,
+            "cascade_percent": cascade_percent,
+            "redirect_count": redirect_count,
+            "total_results": total,
+            "should_halt": should_halt,
+            "reason": reason
+        }
+    
+    @staticmethod
+    def should_skip_endpoint(endpoint_url: str, ffuf_result: dict) -> bool:
+        """
+        Determines if an endpoint should be skipped due to cascading noise.
+        
+        Args:
+            endpoint_url: The URL being fuzzed
+            ffuf_result: Result dict from smart_ffuf() call
+        
+        Returns:
+            True if fuzzing should be halted for this endpoint
+        """
+        results = ffuf_result.get("results", [])
+        cascade_info = CascadeDetector.detect_cascading_redirects(results)
+        
+        if cascade_info["should_halt"]:
+            console.print(
+                f"  [bold red]🛑 HALT CASCADING NOISE[/bold red]  "
+                f"{endpoint_url}\n"
+                f"  [red]  {cascade_info['reason']}[/red]"
+            )
+            return True
+        
+        return False
+
+
 
 
 
@@ -2286,7 +2387,7 @@ class Crawler:
 
             if status == 403:
                 self.forbidden_paths.add(parsed_path)
-                console.print(f"  [yellow]🔒 403 {url}[/yellow] [dim]— added to bypass queue[/dim]")
+                # Silent: 403 added to bypass queue (don't spam output)
             elif status in (401, 302):
                 self.forbidden_paths.add(parsed_path)
                 self.auth_wall_pages.append({
@@ -2294,7 +2395,7 @@ class Crawler:
                     "title": page_title, "body_snippet": body[:400],
                     "signal": f"HTTP {status}",
                 })
-                console.print(f"  [yellow]🔐 {status} {url}[/yellow] [dim]— auth redirect[/dim]")
+                # Silent: auth wall detected
             elif is_auth_wall and not (status == 404 and is_soft_404):
                 self.forbidden_paths.add(parsed_path)
                 self.auth_wall_pages.append({
@@ -2306,14 +2407,14 @@ class Crawler:
                 # custom_404_branded: SPA/Flask sites return login
                 # page with 200 for 404 URLs — this is NOT BAC, it's a soft-404.
                 # NOT added to auth_wall_pages — BAC probe cancelled.
-                console.print(f"  [dim]  ⚙ soft-404 (custom branded): {url} — no BAC probe[/dim]")
+                pass  # Silent (don't spam about soft-404s)
 
             if status in (200, 206):
                 ep = self._url_to_endpoint(url, "GET", 0, "well_known")
                 ep.score = RiskScorer.score_url(url) + 20
                 with self._lock:
                     self.endpoints.append(ep)
-                console.print(f"  [green]✓ {status} {url}[/green] [dim]({len(body)} bytes)[/dim]")
+                # Silent: endpoint found (reducer verbosity)
                 if path == "/robots.txt":
                     self._parse_robots(body, base)
                 elif "sitemap" in path:
@@ -6567,6 +6668,10 @@ class PentestPipeline:
                 f"  [dim]  Fuzzing may be blocked/rate-limited. Consider slow mode.[/dim]"
             )
 
+        # Step 0b: Protocol Security Check (silent, fast — no extra requests)
+        all_findings = []
+        all_findings.extend(self._check_protocol_security(recon_result, target))
+
         # Step 1: Session
         session_mgr = SessionManager(self.client, self.ai)
         if self.args.auth_url:
@@ -6885,7 +6990,8 @@ class PentestPipeline:
         )
 
         limit        = len(planned) if self.args.deep else min(len(planned), 30)
-        all_findings = list(bac_findings) + oauth_saml_findings
+        all_findings.extend(bac_findings)
+        all_findings.extend(oauth_saml_findings)
 
         # ── Smart Directory/File Fuzzing ──────────────────────────────────────
         if shutil.which("ffuf") or shutil.which("gobuster"):
@@ -7090,6 +7196,49 @@ class PentestPipeline:
         return clean
 
 
+    def _check_protocol_security(self, recon_result: "ReconResult", target: str) -> List[Finding]:
+        """Fast protocol check — no extra requests. Just flag what nmap found."""
+        findings = []
+        has_http = any(t.get("url", "").startswith("http://") for t in recon_result.http_targets)
+        has_https = any(t.get("url", "").startswith("https") for t in recon_result.http_targets)
+        
+        if has_http and has_https:
+            url = next((t.get("url") for t in recon_result.http_targets 
+                       if t.get("url", "").startswith("http://")), target)
+            findings.append(Finding(
+                owasp_id="A02", owasp_name="Cryptographic Failures",
+                title="HTTP+HTTPS Both Available — Downgrade Risk",
+                risk="High", confidence=90,
+                url=url, method="GET", param="", payload="",
+                evidence="Both HTTP and HTTPS accessible — attacker downgrades to plaintext HTTP.",
+                baseline_diff="mixed_http_https",
+                tool_output="nmap: 80, 443 open",
+                request_raw=f"GET {url}",
+                response_raw="200 OK",
+                exploit_cmd=f"curl {url}",
+                remediation="HTTP→HTTPS redirect + HSTS header; disable HTTP if unnecessary.",
+                confirmed=True, tool="protocol_check",
+            ))
+        elif has_http:
+            url = next((t.get("url") for t in recon_result.http_targets 
+                       if t.get("url", "").startswith("http://")), target)
+            findings.append(Finding(
+                owasp_id="A02", owasp_name="Cryptographic Failures",
+                title=f"Unencrypted HTTP: {url}",
+                risk="High", confidence=90,
+                url=url, method="GET", param="", payload="",
+                evidence="HTTP without TLS — plaintext credentials/tokens/data.",
+                baseline_diff="http_unencrypted",
+                tool_output="HTTP active",
+                request_raw=f"GET {url}",
+                response_raw="200",
+                exploit_cmd=f"curl {url}",
+                remediation="Enable HTTPS, disable HTTP.",
+                confirmed=True, tool="protocol_check",
+            ))
+        return findings
+
+
     def _ctf_chain(self, finding: Finding, target: str, tech: dict):
         """
         CTF mode: topilgan finding'dan exploitation chain yaratadi.
@@ -7221,6 +7370,13 @@ Return JSON: {{"steps":["step1","step2"],"flag_path":"/root/flag.txt","estimated
                 hits = result.get("results", [])
                 console.print(f"  [dim]  {len(hits)} candidates after filter[/dim]")
 
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                # CASCADE DETECTION — Stop fuzzing if catch-all redirect detected
+                # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                if CascadeDetector.should_skip_endpoint(base_dir, result):
+                    console.print(f"  [dim yellow]  ↳ Skipping endpoint due to cascading noise[/dim yellow]")
+                    continue  # Skip to next base_dir in queue
+                
                 # AI checks each candidate
                 for hit in hits:
                     hit_url  = hit.get("url") or (base_dir + "/" + hit.get("input","")).replace("//","/")
