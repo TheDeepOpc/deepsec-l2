@@ -15,6 +15,7 @@ import hashlib
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 import statistics
+import urllib.parse
 
 
 @dataclass
@@ -247,74 +248,81 @@ class VulnerabilityPredictor:
 
 class EndpointPrioritizer:
     """
-    Prioritizes endpoints for testing based on multiple risk signals.
-    Uses ML-inspired scoring combining behavioral indicators.
+    Ranks endpoints by security value using a 7-factor risk scoring algorithm.
+    Prioritizes high-value targets like /admin, /api, /upload and deprioritizes
+    repetitive content pages like /news/123.
     """
+    # Semantic path risk keywords
+    RISK_KEYWORDS = {
+        # High Risk
+        "admin": 25, "config": 25, "backup": 25, "debug": 25,
+        "shell": 22, "exec": 22, "upload": 22, "download": 20,
+        "api": 20, "graphql": 20, "actuator": 20, "manage": 18,
+        # Medium Risk
+        "login": 15, "register": 15, "auth": 15, "profile": 15,
+        "settings": 15, "account": 15, "user": 12, "order": 12,
+        "payment": 12, "transfer": 12, "cart": 10,
+        # Low Risk (but interesting)
+        "redirect": 8, "proxy": 8, "search": 8, "query": 8,
+        "file": 8, "page": 5, "static": 2,
+    }
 
-    def __init__(self, ai_engine):
-        self.ai = ai_engine
-        self.predictor = VulnerabilityPredictor(ai_engine)
+    # Penalize repetitive content paths
+    REPETITIVE_PATTERNS = [
+        r"/news/\d+", r"/articles/\d+", r"/blog/\d+", r"/post/\d+",
+        r"/category/\w+", r"/archive/\d{4}",
+    ]
 
-    def prioritize(self, endpoints: List, response_data: Dict) -> List:
+    def prioritize(self, endpoints: List[Dict], tech_stack: str) -> List[Dict]:
         """
         Score and rank endpoints by testability and risk.
         Returns endpoints sorted by priority for fuzzing.
         """
         scored = []
 
-        for ep in endpoints:
+        for endpoint in endpoints:
+            url = endpoint.get("url", "")
             score = 0
+            
+            # 1. Semantic Path Analysis (NEW LOGIC)
+            path = urllib.parse.urlparse(url).path.lower()
+            for keyword, weight in self.RISK_KEYWORDS.items():
+                if keyword in path:
+                    score += weight
 
-            # Factor 1: Parameter count (more params = more attack surface)
-            param_count = len(ep.params) if hasattr(ep, 'params') and ep.params else 0
-            score += min(30, param_count * 5)
+            # 2. Parameter Count
+            score += len(endpoint.get("params", {})) * 5
 
-            # Factor 2: HTTP method (POST > PUT > PATCH > DELETE > GET)
-            method = ep.method.upper() if hasattr(ep, 'method') else "GET"
+            # 3. HTTP Method
+            method = endpoint.get("method", "GET").upper()
             method_weights = {"POST": 20, "PUT": 15, "PATCH": 15, "DELETE": 10, "GET": 5}
             score += method_weights.get(method, 0)
 
-            # Factor 3: Endpoint depth/complexity
-            path = ep.url if hasattr(ep, 'url') else ""
+            # 4. Endpoint Depth/Complexity
             depth = path.count('/')
             score += min(15, depth * 2)
 
-            # Factor 4: High-risk keywords in path
+            # 5. High-risk keywords in path
             risky_keywords = ["admin", "api", "internal", "debug", "test", "dev", "backup", "tmp", "upload", "file"]
             risk_keywords_found = sum(1 for kw in risky_keywords if kw in path.lower())
             score += risk_keywords_found * 10
 
-            # Factor 5: Tech stack
-            tech_stack_indicators = {
-                "php": 15,
-                "python": 12,
-                "java": 12,
-                "nodejs": 10,
-                "asp": 12,
-                "wordpress": 18,
-                "joomla": 15,
-            }
-            for tech, weight in tech_stack_indicators.items():
-                if tech.lower() in path.lower():
-                    score += weight
+            # 6. Sensitive Operations (from params)
+            params = endpoint.get("params", {}).keys()
+            for p in params:
+                if p in ("url", "redirect", "file", "path", "cmd", "exec"):
+                    score += 12
 
-            # Factor 6: Has authentication/sensitive operations
-            sensitive_keywords = ["login", "auth", "password", "pay", "transaction", "billing", "credit"]
-            sensitive_count = sum(1 for kw in sensitive_keywords if kw in path.lower())
-            score += sensitive_count * 12
+            # 7. Penalize Repetitive Content (NEW LOGIC)
+            for pattern in self.REPETITIVE_PATTERNS:
+                if re.search(pattern, path):
+                    score *= 0.3  # Reduce score by 70%
+                    break
 
-            # Factor 7: Endpoint has special handling (custom scoring)
-            if hasattr(ep, 'score'):
-                score += ep.score * 0.5
-
-            # Cap at 100
-            score = min(100, max(0, score))
-
-            scored.append((ep, score))
-
+            endpoint["score"] = score
+        
         # Sort by score descending
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [ep for ep, score in scored]
+        return sorted(endpoints, key=lambda e: e.get("score", 0), reverse=True)
 
     def rank_by_roi(self, findings: List) -> List:
         """
