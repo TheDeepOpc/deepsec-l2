@@ -91,6 +91,28 @@ class PentestPipeline:
                 else:
                     console.print(f"  [dim]  {key.replace('_', ' ').title()}: {value}[/dim]")
 
+        # ── SUBDOMAIN ENUMERATION ──────────────────────────────────────
+        console.print(f"\n[cyan]━━ SUBDOMAIN ENUMERATION ━━[/cyan]")
+        if recon_result.subdomains:
+            console.print(f"  [green]✓ {len(recon_result.subdomains)} subdomainlar topilgan[/green]")
+            for sub in recon_result.subdomains[:10]:
+                console.print(f"  [dim]  - {sub}[/dim]")
+            if len(recon_result.subdomains) > 10:
+                console.print(f"  [dim]  ... va yana {len(recon_result.subdomains) - 10}[/dim]")
+            
+            # Subdomainlarni skanerlashga qo'shish
+            for subdomain in recon_result.subdomains[:5]:  # First 5 subdomains
+                sub_url = f"http://{subdomain}"
+                if sub_url not in [t.get("url") for t in recon_result.http_targets]:
+                    recon_result.http_targets.append({
+                        "url": sub_url,
+                        "port": 80,
+                        "ssl": False,
+                        "source": "subdomain_enum"
+                    })
+        else:
+            console.print(f"  [dim yellow]  ⚠ Subdomainlar topilmadi[/dim yellow]")
+
         # WAF warning
         if recon_result.waf not in ("none", "unknown", ""):
             console.print(
