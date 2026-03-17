@@ -73,6 +73,24 @@ class PentestPipeline:
             self._last_target = target
             console.print(f"  [dim yellow]  Recon found no HTTP targets — using {target}[/dim yellow]")
 
+        # ── DOMAIN INFO ────────────────────────────────────────
+        console.print(f"\n[cyan]━━ DOMAIN ANALYSIS ━━[/cyan]")
+        domain_name = target.replace("http://", "").replace("https://", "").split("/")[0]
+        from .domain_analyzer import get_whois_data
+        domain_info = get_whois_data(domain_name)
+        
+        if "error" in domain_info:
+            console.print(f"  [yellow]⚠ Domen ma'lumotlarini olishda xatolik: {domain_info['error']}[/yellow]")
+        else:
+            console.print(f"  [green]✓ Domen ma'lumotlari olingan[/green]")
+            for key, value in domain_info.items():
+                if isinstance(value, list):
+                    console.print(f"  [dim]  {key.replace('_', ' ').title()}:[/dim]")
+                    for item in value[:3]:
+                        console.print(f"  [dim]    - {item}[/dim]")
+                else:
+                    console.print(f"  [dim]  {key.replace('_', ' ').title()}: {value}[/dim]")
+
         # WAF warning
         if recon_result.waf not in ("none", "unknown", ""):
             console.print(
