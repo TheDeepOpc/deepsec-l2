@@ -296,6 +296,17 @@ class PentestPipeline:
                 )
                 continue
 
+            # Skip non-HTML file types (backups, configs, logs, etc.)
+            url_path = urllib.parse.urlparse(ep.url).path.lower()
+            skip_extensions = ['.bak', '.sql', '.zip', '.tar', '.gz', 
+                             '.log', '.conf', '.jar', '.war', '.exe', '.apk',
+                             '.backup', '.old', '.tmp']
+            should_skip_file = any(url_path.endswith(ext) or f'{ext}.' in url_path for ext in skip_extensions)
+            
+            if should_skip_file:
+                skipped_non_html += 1
+                continue
+
             resp = self.client.get(ep.url)
             if resp.get("status") != 200:
                 skipped_non_200 += 1
@@ -303,7 +314,18 @@ class PentestPipeline:
             content_type = (resp.get("headers", {}).get("content-type")
                             or resp.get("headers", {}).get("Content-Type", "")).lower()
             body = resp.get("body", "")
-            if "html" not in content_type and "<html" not in body[:500].lower():
+            
+            # Skip non-HTML content types (images, archives, documents, APIs, etc.)
+            skip_content_types = ['application/json', 'application/xml', 'text/xml',
+                                'application/pdf', 'image/', 'video/', 'audio/',
+                                'application/zip', 'application/x-gzip', 'application/x-tar',
+                                'application/octet-stream', 'text/plain', 'text/csv']
+            is_non_html_content = any(ct in content_type for ct in skip_content_types)
+            
+            # Check if body looks like HTML
+            is_html_body = "<html" in body[:500].lower() or "<body" in body[:500].lower()
+            
+            if is_non_html_content or (not is_html_body and "html" not in content_type):
                 skipped_non_html += 1
                 continue
 

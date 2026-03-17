@@ -557,6 +557,9 @@ class Crawler:
             self.site_tech = RiskScorer.detect_tech(root_resp)
             console.print(f"[dim]  Detected tech: {self.site_tech}[/dim]")
 
+        # Collect response sizes to detect soft-404 patterns
+        response_sizes = []
+        
         for path in well_known:
             url = base + path
             if url in self.visited:
@@ -569,6 +572,9 @@ class Crawler:
                 continue
             with self._lock:
                 self.visited.add(url)
+            
+            # Track response size
+            response_sizes.append(len(r.get("body", "")))
 
             # Tech detection — update from each response
             if not self.site_tech.get("lang") or self.site_tech.get("lang") == "unknown":
