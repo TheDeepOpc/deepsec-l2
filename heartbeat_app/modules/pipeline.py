@@ -9,6 +9,7 @@ from .ai_exploiter import IntelligentPayloadGenerator, MultiStageAttackChainer, 
 from .ai_risk_model import VulnerabilityPredictor, EndpointPrioritizer, BehavioralAnalyzer
 from .vuln_explainer import VulnerabilityExplainer
 from .recon import OOBClient, ReconEngine
+from .reporting import Reporter
 # Get console from engine, or create a simple fallback
 from .. import engine as _engine
 console = getattr(_engine, "console", None)

@@ -38,6 +38,22 @@ def make_args(**overrides):
     return SimpleNamespace(**data)
 
 
+def _sync_runtime_state() -> None:
+    """Propagate mutable runtime settings to modules that cached them at import time."""
+    from . import engine
+    from .modules import base, pipeline, reporting, wordlists
+
+    engine.MODEL_NAME = core.MODEL_NAME
+    engine.REPORT_DIR = core.REPORT_DIR
+
+    base.MODEL_NAME = core.MODEL_NAME
+    base.REPORT_DIR = core.REPORT_DIR
+
+    pipeline.MODEL_NAME = core.MODEL_NAME
+    reporting.REPORT_DIR = core.REPORT_DIR
+    wordlists.MODEL_NAME = core.MODEL_NAME
+
+
 def apply_runtime_options(args) -> None:
     if getattr(args, "model", ""):
         core.MODEL_NAME = args.model
@@ -45,6 +61,7 @@ def apply_runtime_options(args) -> None:
     if output_dir:
         core.REPORT_DIR = Path(output_dir)
         core.REPORT_DIR.mkdir(exist_ok=True, parents=True)
+    _sync_runtime_state()
 
 
 def run_pentest(args) -> Optional[list]:

@@ -1,10 +1,41 @@
-try:
-    from ..engine_combined import FileUploadAttacker, JWTAttacker, WebSocketTester
-except (ImportError, ModuleNotFoundError):
-    # Fallback if engine_combined.py is not available
-    # These classes are not essential for the main pipeline
-    FileUploadAttacker = None
-    JWTAttacker = None
-    WebSocketTester = None
+from .base import console
 
-__all__ = ['FileUploadAttacker', 'JWTAttacker', 'WebSocketTester']
+
+class _UnavailableAttack:
+    attack_name = "attack"
+
+    def __init__(self, *args, **kwargs):
+        self.available = False
+
+    def _warn(self) -> None:
+        console.print(
+            f"[yellow]{self.attack_name} is unavailable in this modular build; "
+            "skipping related checks.[/yellow]"
+        )
+
+
+class FileUploadAttacker(_UnavailableAttack):
+    attack_name = "File upload attacker"
+
+    def attack(self, *args, **kwargs):
+        self._warn()
+        return []
+
+
+class JWTAttacker(_UnavailableAttack):
+    attack_name = "JWT attacker"
+
+    def attack(self, *args, **kwargs):
+        self._warn()
+        return []
+
+
+class WebSocketTester(_UnavailableAttack):
+    attack_name = "WebSocket tester"
+
+    def test(self, *args, **kwargs):
+        self._warn()
+        return []
+
+
+__all__ = ["FileUploadAttacker", "JWTAttacker", "WebSocketTester"]

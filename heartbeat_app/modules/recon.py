@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import List, Set, Dict, Optional, Tuple
 from .base import *
 import threading
@@ -17,6 +18,7 @@ if console is None:
                 print(*args)
         console = SimpleConsole()
 
+@dataclass
 class ReconResult:
     target_input:  str          # user-provided input
     resolved_ip:   str          # resolved IP address
@@ -120,7 +122,7 @@ class ReconEngine:
 
         # 8. AI selects highest-priority targets
         if len(http_targets) > 1:
-            http_targets = self._ai_prioritize(result)
+            result.http_targets = self._ai_prioritize(result)
 
         return result
 
