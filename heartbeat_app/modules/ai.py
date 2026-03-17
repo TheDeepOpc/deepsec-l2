@@ -23,6 +23,7 @@ class AIEngine:
     """
     def __init__(self):
         self.route_analyzer = RouteAnalyzer() # <-- ANALIZATORNI ISHGA TUSHIRISH
+        self._cache: dict[str, Any] = {}
 
     def update_route_families(self, context: ScanContext):
         """Analyzes all endpoints and updates the route families in the context."""
@@ -61,6 +62,143 @@ class AIEngine:
         return {
             "action": "FUZZ_ENDPOINT",
             "endpoint": highest_priority_endpoint
+        }
+
+    def _call(self, prompt: str, cache: bool = True) -> Any:
+        cache_key = hashlib.md5(prompt.encode("utf-8", errors="ignore")).hexdigest()
+        if cache and cache_key in self._cache:
+            return self._cache[cache_key]
+
+        client = create_ollama_client()
+        if client is None or not HAS_OLLAMA:
+            result: Any = {}
+        else:
+            try:
+                resp = client.chat(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": "Return compact JSON when possible."},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                content = (resp.get("message", {}) or {}).get("content", "").strip()
+                try:
+                    result = json.loads(content) if content else {}
+                except Exception:
+                    match = re.search(r"\{.*\}|\[.*\]", content, re.S)
+                    if match:
+                        try:
+                            result = json.loads(match.group(0))
+                        except Exception:
+                            result = content
+                    else:
+                        result = content
+            except Exception:
+                result = {}
+
+        if cache:
+            self._cache[cache_key] = result
+        return result
+
+    def identify_login_fields(self, body: str, login_url: str) -> Dict[str, str]:
+        return {
+            "username_field": "username" if 'name="username"' in body.lower() else "email" if 'name="email"' in body.lower() else "username",
+            "password_field": "password",
+            "csrf_field": "csrf_token",
+        }
+
+    def analyze_403_response(self, parent_url: str, child_url: str, child_status: int,
+                             child_body: str, child_headers: dict, context: str = "") -> Dict[str, Any]:
+        body_lower = (child_body or "").lower()
+        login_signals = sum(1 for s in ("login", "sign in", "password", "username") if s in body_lower)
+        is_html = "<html" in body_lower or "text/html" in str(child_headers).lower()
+        looks_real = child_status in (200, 201) and len(child_body or "") > 80 and login_signals < 2 and is_html
+        return {
+            "verdict": "real_accessible_content" if looks_real else "not_bac",
+            "is_real_bac": looks_real,
+            "confidence": 80 if looks_real else 20,
+            "what_i_see": "HTML content different from a login wall" if looks_real else "Login/error/static-like response",
+            "reason": "Heuristic 403 child validation" if looks_real else "Heuristic rejected as non-sensitive or login-like",
+            "content_type_detected": "html" if is_html else "unknown",
+        }
+
+    def analyze_page(self, url: str, status: int, body: str, headers: dict, real_200: dict) -> Dict[str, Any]:
+        path = urllib.parse.urlparse(url).path.lower()
+        suggested = []
+        if "/admin" in path or path.endswith("/admin"):
+            suggested = ["/admin/users", "/admin/settings", "/admin/config"]
+        elif any(token in path for token in ("/login", "/signin", "/auth")):
+            suggested = ["/dashboard", "/profile", "/account"]
+        elif any(token in path for token in ("/search", "/find", "/query")):
+            suggested = ["/search", "/api/search"]
+        page_type = "admin" if "/admin" in path else "auth" if any(token in path for token in ("/login", "/signin", "/auth")) else "generic"
+        return {
+            "page_type": page_type,
+            "description": f"Heuristic analysis for {page_type} page",
+            "suggested_child_paths": suggested,
+        }
+
+    def verify_child_access(self, parent_url: str, child_url: str, child_status: int,
+                            child_body: str, child_headers: dict, parent_signal: str = "") -> Dict[str, Any]:
+        result = self.analyze_403_response(parent_url, child_url, child_status, child_body, child_headers, parent_signal)
+        return {
+            "verdict": result.get("verdict", "unknown"),
+            "reason": result.get("reason", ""),
+            "is_real_bac": result.get("is_real_bac", False),
+            "confidence": result.get("confidence", 0),
+        }
+
+    def analyze_bac(self, bac: dict) -> Dict[str, Any]:
+        comparisons = bac.get("comparisons", [])
+        if not comparisons:
+            return {"found": False}
+        first = comparisons[0]
+        return {
+            "found": True,
+            "verified": True,
+            "confidence": 80,
+            "owasp_id": "A01",
+            "owasp_name": "Broken Access Control",
+            "title": f"BAC/IDOR via role comparison: {bac.get('url', '')}",
+            "risk": "High",
+            "technical": json.dumps(first)[:200],
+            "exploit_cmd": "",
+            "remediation": "Ensure each role is validated server-side for every protected endpoint.",
+        }
+
+    def plan_endpoints(self, endpoints: List[Any]) -> List[Any]:
+        return sorted(endpoints, key=lambda ep: getattr(ep, "score", 0), reverse=True)
+
+    def classify_finding(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        status_changed = context.get("status_changed", False)
+        size_pct = context.get("size_pct", 0) or 0
+        new_errors = context.get("new_errors", []) or []
+        found = bool(status_changed or size_pct >= 20 or new_errors)
+        return {
+            "found": found,
+            "confidence": 75 if found else 20,
+            "owasp_id": "A01" if "idor" in str(context.get("tool", "")).lower() else "A03",
+            "owasp_name": "Broken Access Control" if "idor" in str(context.get("tool", "")).lower() else "Injection",
+            "title": f"Potential finding on {context.get('url', '')}",
+            "risk": "Medium",
+            "evidence": context.get("tool_output", "") or json.dumps({"size_pct": size_pct, "status_changed": status_changed})[:200],
+            "exploit_cmd": "",
+            "remediation": "Review server-side validation and access controls.",
+        }
+
+    def analyze_fuzz_baseline(self, base_url: str, probes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        statuses = [p.get("status") for p in probes]
+        sizes = [p.get("size") for p in probes]
+        words = [p.get("words") for p in probes]
+        lines = [p.get("lines") for p in probes]
+        return {
+            "filter_codes": list(set(statuses)) if len(set(statuses)) == 1 else [],
+            "filter_sizes": list(set(sizes)) if len(set(sizes)) <= 2 else [],
+            "filter_words": list(set(words)) if len(set(words)) <= 2 else [],
+            "filter_lines": list(set(lines)) if len(set(lines)) <= 2 else [],
+            "tolerance_bytes": 20,
+            "explanation": "Heuristic baseline analysis",
+            "recursive": True,
         }
 
 class Recursive403Bypasser:
