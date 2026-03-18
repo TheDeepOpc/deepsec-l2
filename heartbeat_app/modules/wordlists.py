@@ -183,6 +183,7 @@ class AIWordlistSelector:
 
     def __init__(self, ai: Any):
         self.ai = ai
+        self._ai_tiebreak_disabled = False
         self._cache: dict[str, str] = {}  # (category+context_hash) → path
         # Prefer practical, widely used wordlists first.
         self._preferred_names: dict[str, list[str]] = {
@@ -331,7 +332,7 @@ class AIWordlistSelector:
     def _ask_ai(self, category: str, candidates: list[str],
                 context: dict) -> tuple[Optional[str], str]:
         """Give AI the candidate list and ask for the best match."""
-        if not HAS_OLLAMA:
+        if not HAS_OLLAMA or self._ai_tiebreak_disabled:
             return None, ""
 
         # Shorten file names (AI doesn't need full paths)
@@ -384,6 +385,10 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
                     return candidates[idx], str(reason)
         except Exception as e:
             console.print(f"[dim red]AIWordlistSelector error: {e}[/dim red]")
+            msg = str(e).lower()
+            if "model" in msg and "not found" in msg:
+                self._ai_tiebreak_disabled = True
+                console.print("[dim yellow]AI tie-break disabled for this run; using heuristic ranking.[/dim yellow]")
         return None, ""
 
     def _rank_candidates(self, category: str, candidates: list[str]) -> list[str]:
@@ -518,3 +523,5 @@ Respond ONLY with JSON: {{"selected_index": 0, "reason": "brief reason"}}
         return str(path)
 
 __all__ = ['WordlistScanner', 'AIWordlistSelector']
+
+

@@ -201,6 +201,237 @@ class AIEngine:
             "recursive": True,
         }
 
+    def analyze_dir_hit(
+        self,
+        url: str,
+        status: int,
+        size: int,
+        words: int,
+        lines: int,
+        body: str,
+        profile: Any,
+    ) -> Dict[str, Any]:
+        """Heuristic analyzer for smart directory fuzz hits."""
+        parsed = urllib.parse.urlparse(url or "")
+        path = (parsed.path or "/").lower()
+        body_l = (body or "").lower()
+        body_len = len(body or "")
+
+        is_directory = path.endswith("/") or ("." not in path.rsplit("/", 1)[-1])
+        looks_error = any(
+            token in body_l
+            for token in (
+                "404",
+                "not found",
+                "page not found",
+                "internal server error",
+                "access denied",
+            )
+        )
+
+        # Soft-404 similarity guard against noisy ffuf result sets.
+        near_profile_noise = False
+        if profile is not None:
+            try:
+                tolerance = max(80, int(getattr(profile, "tolerance_bytes", 20) or 20) * 4)
+                for fs in getattr(profile, "filter_sizes", []) or []:
+                    if abs(body_len - int(fs)) <= tolerance:
+                        near_profile_noise = True
+                        break
+            except Exception:
+                near_profile_noise = False
+
+        sensitive_keywords = (
+            "admin",
+            "backup",
+            "config",
+            ".env",
+            "debug",
+            "phpinfo",
+            "swagger",
+            "actuator",
+            "private",
+            "internal",
+            "database",
+            "dump",
+        )
+        is_sensitive_path = any(k in path for k in sensitive_keywords)
+
+        confidence = 35
+        risk = "Info"
+        finding_type = "directory"
+        owasp_id = "A05"
+        owasp_name = "Security Misconfiguration"
+        title = f"Interesting path exposed: {path or '/'}"
+        remediation = "Restrict access to administrative or sensitive paths."
+        reason = "Low-signal directory hit."
+
+        if near_profile_noise or looks_error:
+            confidence = 10
+            reason = "Response looks like soft-404/error noise."
+            return {
+                "type": "noise",
+                "risk": "Info",
+                "reason": reason,
+                "is_directory": is_directory,
+                "is_sensitive": False,
+                "confidence": confidence,
+                "owasp_id": owasp_id,
+                "owasp_name": owasp_name,
+                "title": title,
+                "remediation": remediation,
+            }
+
+        if status in (401, 403):
+            confidence = 30
+            reason = "Protected path detected (auth-required)."
+        elif status in (200, 201, 204):
+            confidence = 55
+            reason = "Accessible path returned successful response."
+            if is_sensitive_path:
+                confidence = 85
+                risk = "High"
+                finding_type = "sensitive_exposure"
+                title = f"Sensitive endpoint exposed: {path or '/'}"
+                reason = "Sensitive/admin-like path is directly accessible."
+            elif is_directory and body_len > 120:
+                confidence = 65
+                risk = "Medium"
+                reason = "Browsable/discoverable directory-like resource."
+        elif status in (301, 302, 307, 308):
+            confidence = 40
+            reason = "Redirecting endpoint; needs deeper validation."
+        else:
+            confidence = 20
+            reason = "Low-value status for exposure finding."
+
+        is_sensitive = bool(
+            status in (200, 201, 204)
+            and is_sensitive_path
+            and not looks_error
+            and not near_profile_noise
+        )
+        return {
+            "type": finding_type,
+            "risk": risk,
+            "reason": reason,
+            "is_directory": is_directory,
+            "is_sensitive": is_sensitive,
+            "confidence": max(0, min(100, int(confidence))),
+            "owasp_id": owasp_id,
+            "owasp_name": owasp_name,
+            "title": title,
+            "remediation": remediation,
+        }
+
+    def fp_filter(self, finding: "Finding") -> Dict[str, Any]:
+        """Lightweight AI fallback for false-positive filtering."""
+        evidence = (getattr(finding, "evidence", "") or "").lower()
+        output = (getattr(finding, "tool_output", "") or "").lower()
+        title = (getattr(finding, "title", "") or "").lower()
+        combined = "\n".join((evidence, output, title))
+        confidence = int(getattr(finding, "confidence", 0) or 0)
+
+        if any(
+            token in combined
+            for token in (
+                "redirect to /login",
+                "redirected to /login",
+                "access denied",
+                "captcha",
+                "blocked by firewall",
+            )
+        ):
+            return {
+                "is_fp": True,
+                "reason": "Behavior indicates auth wall or generic blocking page.",
+                "adjusted_confidence": min(confidence, 30),
+            }
+
+        if confidence < 45:
+            return {
+                "is_fp": True,
+                "reason": "Very low confidence signal.",
+                "adjusted_confidence": confidence,
+            }
+
+        if any(token in combined for token in ("sql syntax", "uid=", "root:x:0:0:", "oob callback")):
+            return {
+                "is_fp": False,
+                "reason": "Strong exploitation evidence detected.",
+                "adjusted_confidence": max(confidence, 80),
+            }
+
+        # Conservative adjustment to avoid overconfidence.
+        adjusted = confidence - 5 if confidence > 70 else confidence
+        return {
+            "is_fp": False,
+            "reason": "No strong false-positive markers detected.",
+            "adjusted_confidence": max(0, adjusted),
+        }
+
+    def verify_finding(self, finding: "Finding", client: Any) -> Dict[str, Any]:
+        """Best-effort verification pass by replaying a GET request."""
+        url = getattr(finding, "url", "") or ""
+        if not url or client is None:
+            return {"confirmed": False, "evidence": "Verification skipped: missing URL/client."}
+
+        try:
+            resp = client.get(url)
+        except Exception as exc:
+            return {"confirmed": False, "evidence": f"Verification request failed: {exc}"}
+
+        status = int(resp.get("status", 0) or 0)
+        body = (resp.get("body", "") or "").lower()
+        final_url = (resp.get("url", "") or "").lower()
+
+        if status in (200, 201) and "/login" not in final_url and "please log in" not in body:
+            return {"confirmed": True, "evidence": f"Reproducible status {status} on replay."}
+
+        if status in (301, 302, 307, 308) and "/login" in final_url:
+            return {"confirmed": False, "evidence": "Replay redirected to login page."}
+
+        return {"confirmed": False, "evidence": f"Replay status {status} did not confirm exploitability."}
+
+    def correlate(self, signals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Produce correlated findings from multiple weak signals."""
+        if not signals:
+            return []
+
+        tools = {str(s.get("tool", "")).strip() for s in signals if s.get("tool")}
+        owasp_ids = [str(s.get("owasp_id", "")).strip() for s in signals if s.get("owasp_id")]
+        status_changes = sum(1 for s in signals if s.get("status_changed"))
+        high_conf = max([int(s.get("confidence", 0) or 0) for s in signals] or [0])
+        unique_tools = len(tools)
+
+        confidence = min(95, 45 + unique_tools * 10 + status_changes * 5 + int(high_conf * 0.2))
+        if confidence < MIN_CONFIDENCE:
+            return []
+
+        top_owasp = collections.Counter([x for x in owasp_ids if x]).most_common(1)
+        owasp_id = top_owasp[0][0] if top_owasp else "A05"
+        owasp_name = {
+            "A01": "Broken Access Control",
+            "A02": "Cryptographic Failures",
+            "A03": "Injection",
+            "A04": "Insecure Design",
+            "A05": "Security Misconfiguration",
+            "A07": "Identification and Authentication Failures",
+            "A10": "Server-Side Request Forgery",
+        }.get(owasp_id, "Correlated Security Finding")
+        risk = "High" if confidence >= 80 else "Medium"
+
+        return [
+            {
+                "owasp_id": owasp_id,
+                "owasp_name": owasp_name,
+                "title": f"Correlated multi-signal finding ({unique_tools} tools)",
+                "risk": risk,
+                "confidence": confidence,
+                "evidence": f"{len(signals)} signals correlated across tools: {', '.join(sorted(tools))}",
+            }
+        ]
+
 class Recursive403Bypasser:
     """
     Problem: /admin → 403, /admin/config → 403, /admin/config/template → 200
