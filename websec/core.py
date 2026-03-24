@@ -103,7 +103,7 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBAL CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-MODEL_NAME      = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
+MODEL_NAME      = os.environ.get("OLLAMA_MODEL", "minmax-m2:cloud")
 OLLAMA_HOST     = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 REPORT_DIR      = Path("pentest_reports")
 REPORT_DIR.mkdir(exist_ok=True)

@@ -406,6 +406,8 @@ def api_scan_start() -> Response:
         env=env,
     )
 
+    runtime.append_log("\033[31m[DEEPSEC] CO-PILOT INITIATED SCAN\033[0m")
+    runtime.append_log("[DEEPSEC] CMD: " + " ".join(runtime.cmd))
     runtime = ScanRuntime(
         id=scan_id,
         target=str(payload.get("target") or "").strip(),
@@ -416,8 +418,33 @@ def api_scan_start() -> Response:
         deep=bool(payload.get("deep")),
         test_env=str(payload.get("test_env") or payload.get("test_environment") or "Dev"),
     )
-    runtime.append_log("[web-panel] uzCERT Authorized Pentest — all fields enabled")
-    runtime.append_log("[web-panel] CMD: " + " ".join(runtime.cmd))
+
+    ascii_banner = """
+\033[31m
+ /$$$$$$$  /$$$$$$$$ /$$$$$$$$ /$$$$$$$   /$$$$$$  /$$$$$$$$  /$$$$$$ 
+| $$__  $$| $$_____/| $$_____/| $$__  $$ /$$__  $$| $$_____/ /$$__  $$
+| $$  \ $$| $$      | $$      | $$  \ $$| $$  \__/| $$      | $$  \__/
+| $$  | $$| $$$$$   | $$$$$   | $$$$$$$/|  $$$$$$ | $$$$$   | $$      
+| $$  | $$| $$__/   | $$__/   | $$____/  \____  $$| $$__/   | $$      
+| $$  | $$| $$      | $$      | $$       /$$  \ $$| $$      | $$    $$
+| $$$$$$$/| $$$$$$$$| $$$$$$$$| $$      |  $$$$$$/| $$$$$$$$|  $$$$$$/
+|_______/ |________/|________/|__/       \______/ |________/ \______/ 
+
+                       
+                        [  C O - P I L O T  ]
+                    ----AI based Pentest Agent----
+                 
+Name: DeepSec MARK 2
+Type: Black Box Web Application Pentest Agent
+AI model: minmax-m2:cloud(Ollama)
+REPO: https://github.com/TheDeepOpc/deepsec-l2
+\033[0m
+"""
+
+    runtime.append_log(ascii_banner)
+    runtime.append_log("\033[31m[DEEPSEC] CO-PILOT INITIATED SCAN\033[0m")
+    runtime.append_log("[DEEPSEC] CMD: " + " ".join(runtime.cmd))
+    
 
     with scans_lock:
         scans[scan_id] = runtime
