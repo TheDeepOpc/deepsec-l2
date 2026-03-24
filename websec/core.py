@@ -48,7 +48,7 @@ USAGE:
   python3 pentest_ai_v8.py -t http://spa.lab --mode spa --deep
 """
 
-import argparse, asyncio, base64, collections, copy, datetime, difflib
+import argparse, asyncio, base64, collections, copy, datetime, difflib, math
 import hashlib, html as html_mod, http.cookiejar, json, os, queue, re, shlex
 import shutil, signal, socket, ssl, subprocess, sys, tempfile, threading
 import time, traceback, urllib.error, urllib.parse, urllib.request
@@ -250,6 +250,7 @@ PIPELINE_STAGE_HINTS = [
     {"token": "CRAWL", "label": "Crawl", "progress": 32},
     {"token": "PARAM DISCOVERY", "label": "Param Discovery", "progress": 40},
     {"token": "PAGE ANALYSIS", "label": "Page Analysis", "progress": 48},
+    {"token": "SOURCE CODE REVIEW", "label": "Source Code Review", "progress": 50},
     {"token": "BAC MULTI ROLE", "label": "BAC Multi-Role", "progress": 52},
     {"token": "AI PLANNER", "label": "AI Planner", "progress": 56},
     {"token": "AGENTIC OWASP FUZZING", "label": "OWASP Fuzzing", "progress": 66},
@@ -7158,6 +7159,598 @@ Return JSON: {{"vulnerable":false,"issues":[{{"type":"...","severity":"High","ev
 # ─────────────────────────────────────────────────────────────────────────────
 # NUCLEI RUNNER
 # ─────────────────────────────────────────────────────────────────────────────
+def _v_aws_access(v: str) -> bool:
+    return len(v) == 20 and v.startswith("AKIA")
+
+
+def _v_aws_secret(v: str) -> bool:
+    return len(v) == 40
+
+
+def _v_aws_session(v: str) -> bool:
+    return len(v) >= 100
+
+
+def _v_google_api(v: str) -> bool:
+    return v.startswith("AIza") and len(v) == 39
+
+
+def _v_google_maps(v: str) -> bool:
+    return len(v) >= 35
+
+
+def _v_azure(v: str) -> bool:
+    return len(v) >= 88
+
+
+def _v_true_val(v: str) -> bool:
+    return True
+
+
+def _v_db_pass(v: str) -> bool:
+    return len(v) >= 6
+
+
+def _v_db_user(v: str) -> bool:
+    return len(v) >= 3
+
+
+def _v_jwt(v: str) -> bool:
+    return len(v) >= 16
+
+
+def _v_bearer(v: str) -> bool:
+    return len(v) >= 50 and "." in v
+
+
+def _v_auth_token(v: str) -> bool:
+    return len(v) >= 32
+
+
+def _v_stripe_secret(v: str) -> bool:
+    return v.startswith("sk_") and len(v) > 28
+
+
+def _v_stripe_pub(v: str) -> bool:
+    return v.startswith("pk_") and len(v) > 28
+
+
+def _v_paypal(v: str) -> bool:
+    return len(v) >= 16
+
+
+def _v_twilio(v: str) -> bool:
+    return len(v) == 32 and all(c in "0123456789abcdef" for c in v.lower())
+
+
+def _v_sendgrid(v: str) -> bool:
+    return v.startswith("SG.") and len(v) > 65
+
+
+def _v_slack(v: str) -> bool:
+    return v.startswith("xox")
+
+
+def _v_discord(v: str) -> bool:
+    return len(v) > 56
+
+
+def _v_telegram(v: str) -> bool:
+    return ":" in v and len(v) > 44
+
+
+def _v_github_pat(v: str) -> bool:
+    return v.startswith("ghp_") or v.startswith("github_pat_")
+
+
+def _v_github_oauth(v: str) -> bool:
+    return v.startswith("gho_")
+
+
+def _v_gitlab(v: str) -> bool:
+    return v.startswith("glpat-")
+
+
+def _v_npm(v: str) -> bool:
+    return v.startswith("npm_")
+
+
+def _v_cloudflare(v: str) -> bool:
+    return len(v) == 37
+
+
+def _v_heroku(v: str) -> bool:
+    return len(v) == 36
+
+
+def _v_digitalocean(v: str) -> bool:
+    return len(v) == 64
+
+
+def _v_algolia_key(v: str) -> bool:
+    return len(v) == 32
+
+
+def _v_algolia_app(v: str) -> bool:
+    return len(v) == 10
+
+
+def _v_ga_id(v: str) -> bool:
+    return True
+
+
+def _v_yandex(v: str) -> bool:
+    return 6 <= len(v) <= 9
+
+
+def _v_fb(v: str) -> bool:
+    return 13 <= len(v) <= 16
+
+
+def _v_generic_pass(v: str) -> bool:
+    return len(v) >= 8
+
+
+def _v_generic_api(v: str) -> bool:
+    return len(v) >= 16
+
+
+def _v_conn_string(v: str) -> bool:
+    hay = v.lower()
+    return any(x in hay for x in ["host=", "server=", "data source", "password", "pwd="])
+
+
+def _v_debug(v: str) -> bool:
+    return v.lower() in ("true", "1", "on")
+
+
+def _v_encrypt_key(v: str) -> bool:
+    return len(v) >= 16
+
+
+def _v_mailgun(v: str) -> bool:
+    return v.startswith("key-") and len(v) == 36
+
+
+def _v_mailchimp(v: str) -> bool:
+    return "-us" in v and len(v) > 35
+
+
+def _v_ansible(v: str) -> bool:
+    return len(v) >= 8
+
+
+def _v_docker(v: str) -> bool:
+    return len(v) >= 6
+
+
+class SourceCodeReviewer:
+    """Review cached HTML/JS/JSON responses for exposed secrets and open config files."""
+
+    SECRET_PATTERNS: List[Dict[str, Any]] = [
+        {"name": "AWS Access Key ID", "regex": r'(?:^|[^a-zA-Z0-9])(AKIA[0-9A-Z]{16})(?:[^a-zA-Z0-9]|$)', "risk": "High", "validate": _v_aws_access},
+        {"name": "AWS Secret Access Key", "regex": r'(?:aws_secret(?:_access)?_key|AWSSecretKey|aws_secret)\s*[=:"\s]+([A-Za-z0-9/+=]{40})', "risk": "Critical", "validate": _v_aws_secret},
+        {"name": "AWS Session Token", "regex": r'(?:aws_session_token|aws_token)\s*[=:"\s]+([A-Za-z0-9/+=]{100,})', "risk": "Critical", "validate": _v_aws_session},
+        {"name": "Google API Key", "regex": r'(?:api[_\-]?key|apikey|AIza)["\s:=]+\b(AIza[0-9A-Za-z\-_]{35})\b', "risk": "High", "validate": _v_google_api},
+        {"name": "Google Maps API Key", "regex": r'(?:googlemaps?|maps?)[^"\'<>]{0,50}["\']([A-Za-z0-9_\-]{35,50})["\']', "risk": "Medium", "validate": _v_google_maps},
+        {"name": "Azure Storage Key", "regex": r'(?:azure|AccountKey)[^"\'<>]{0,30}["\']([A-Za-z0-9+/]{86}==)["\']', "risk": "Critical", "validate": _v_azure},
+        {"name": "GCP Service Account", "regex": r'"type"\s*:\s*"service_account"', "risk": "Critical", "validate": _v_true_val},
+        {"name": "RSA Private Key", "regex": r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----', "risk": "Critical", "validate": _v_true_val},
+        {"name": "PGP Private Key", "regex": r'-----BEGIN PGP PRIVATE KEY BLOCK-----', "risk": "Critical", "validate": _v_true_val},
+        {"name": "Database Connection String", "regex": r'(?:mysql|postgres|postgresql|mongodb|redis|mssql|oracle)://[^:]+:[^@\s]{4,}@[^\s"\'<>]+', "risk": "Critical", "validate": _v_conn_string},
+        {"name": "Database Password", "regex": r'(?:db_password|database_password|dbpassword|dbpasswd|DB_PASS)\s*[=:"\s]+["\']([^"\']{6,})["\']', "risk": "Critical", "validate": _v_db_pass},
+        {"name": "Database Username", "regex": r'(?:db_user(?:name)?|database_user|dbuser|DB_USER)\s*[=:"\s]+["\']([^"\']{3,})["\']', "risk": "Medium", "validate": _v_db_user},
+        {"name": "JWT Secret", "regex": r'(?:jwt[_\-]?secret|jwt[_\-]?key|JWT_SECRET|secret[_\-]?key)\s*[=:"\s]+["\']([^"\']{16,})["\']', "risk": "Critical", "validate": _v_jwt},
+        {"name": "Bearer Token (hardcoded)", "regex": r'(?:Authorization|Bearer)\s*[=:"\s]+["\']?(?:Bearer\s+)?([A-Za-z0-9_\-\.]{50,})["\']?', "risk": "High", "validate": _v_bearer},
+        {"name": "Auth Token / API Token", "regex": r'(?:auth[_\-]?token|api[_\-]?token|access[_\-]?token|authorizationToken)\s*[=:"\s]+["\']([A-Za-z0-9_\-\.]{32,})["\']', "risk": "High", "validate": _v_auth_token},
+        {"name": "Stripe Secret Key", "regex": r'\b(sk_(?:live|test)_[0-9a-zA-Z]{24,})\b', "risk": "Critical", "validate": _v_stripe_secret},
+        {"name": "Stripe Publishable Key", "regex": r'\b(pk_(?:live|test)_[0-9a-zA-Z]{24,})\b', "risk": "Medium", "validate": _v_stripe_pub},
+        {"name": "PayPal Client Secret", "regex": r'(?:paypal[_\-]?(?:client[_\-]?)?secret)\s*[=:"\s]+["\']([^"\']{16,})["\']', "risk": "Critical", "validate": _v_paypal},
+        {"name": "Twilio Auth Token", "regex": r'(?:twilio[_\-]?auth[_\-]?token|TWILIO_AUTH)\s*[=:"\s]+["\']([0-9a-f]{32})["\']', "risk": "Critical", "validate": _v_twilio},
+        {"name": "SendGrid API Key", "regex": r'\b(SG\.[A-Za-z0-9_\-]{22,}\.[A-Za-z0-9_\-]{43,})\b', "risk": "Critical", "validate": _v_sendgrid},
+        {"name": "Slack Token", "regex": r'\b(xox[bpoa]-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{24,})\b', "risk": "High", "validate": _v_slack},
+        {"name": "Discord Bot Token", "regex": r'\b([MN][A-Za-z0-9]{23}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,})\b', "risk": "High", "validate": _v_discord},
+        {"name": "Telegram Bot Token", "regex": r'\b(\d{8,10}:[A-Za-z0-9_\-]{35})\b', "risk": "High", "validate": _v_telegram},
+        {"name": "GitHub Personal Access Token", "regex": r'\b(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})\b', "risk": "Critical", "validate": _v_github_pat},
+        {"name": "GitHub OAuth Token", "regex": r'\b(gho_[A-Za-z0-9]{36})\b', "risk": "Critical", "validate": _v_github_oauth},
+        {"name": "GitLab Personal Token", "regex": r'\b(glpat-[A-Za-z0-9_\-]{20})\b', "risk": "Critical", "validate": _v_gitlab},
+        {"name": "npm Token", "regex": r'\b(npm_[A-Za-z0-9]{36})\b', "risk": "High", "validate": _v_npm},
+        {"name": "Cloudflare API Key", "regex": r'(?:cloudflare[_\-]?(?:api[_\-]?)?key|CLOUDFLARE_KEY)\s*[=:"\s]+["\']([A-Za-z0-9_]{37})["\']', "risk": "High", "validate": _v_cloudflare},
+        {"name": "Heroku API Key", "regex": r'(?:heroku[_\-]?api[_\-]?key|HEROKU_API_KEY)\s*[=:"\s]+["\']([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["\']', "risk": "High", "validate": _v_heroku},
+        {"name": "DigitalOcean Token", "regex": r'(?:digitalocean[_\-]?(?:token|key)|DO_TOKEN)\s*[=:"\s]+["\']([A-Za-z0-9]{64})["\']', "risk": "High", "validate": _v_digitalocean},
+        {"name": "Algolia API Key", "regex": r'(?:algolia[_\-]?(?:admin[_\-]?)?(?:api[_\-]?)?key|ALGOLIA_KEY)\s*[=:"\s]+["\']([A-Za-z0-9]{32})["\']', "risk": "High", "validate": _v_algolia_key},
+        {"name": "Algolia App ID", "regex": r'(?:algolia[_\-]?app[_\-]?id|ALGOLIA_APP_ID)\s*[=:"\s]+["\']([A-Z0-9]{10})["\']', "risk": "Medium", "validate": _v_algolia_app},
+        {"name": "Google Analytics / Tag Manager ID", "regex": r'\b(G-[A-Z0-9]{10}|UA-\d{4,9}-\d{1,4}|GTM-[A-Z0-9]{4,8}|AW-\d{9,12})\b', "risk": "Info", "validate": _v_ga_id},
+        {"name": "Yandex Metrica Counter ID", "regex": r'(?:ym|metrika|metrica|yandex[_\-]?counter)\s*[=:(,\s]+(\d{6,9})\b', "risk": "Info", "validate": _v_yandex},
+        {"name": "Facebook App ID / Pixel", "regex": r'(?:fb[_\-]?app[_\-]?id|facebook[_\-]?app[_\-]?id|fbq)\s*[=:(,\s]+["\']?(\d{13,16})["\']?', "risk": "Info", "validate": _v_fb},
+        {"name": "Generic Password (hardcoded)", "regex": r'(?:password|passwd|pass|pwd)\s*[=:]\s*["\']([^"\'${\s]{8,})["\']', "risk": "High", "validate": _v_generic_pass},
+        {"name": "Generic API Key / Secret", "regex": r'(?:api[_\-]?(?:key|secret)|app[_\-]?(?:key|secret)|client[_\-]?secret|consumer[_\-]?(?:key|secret))\s*[=:"\s]+["\']([A-Za-z0-9_\-+=/.]{16,})["\']', "risk": "High", "validate": _v_generic_api},
+        {"name": "Connection String / DSN", "regex": r'(?:connectionstring|connection_string|conn\.login|DSN)\s*[=:"\s]+["\']([^"\']{10,})["\']', "risk": "Critical", "validate": _v_conn_string},
+        {"name": "App Debug Mode ON", "regex": r'(?:app_debug|APP_DEBUG|debug)\s*[=:]\s*["\']?(true|True|TRUE|1|on)["\']?', "risk": "Medium", "validate": _v_debug},
+        {"name": "Encryption Key", "regex": r'(?:encryption[_\-]?key|encrypt[_\-]?key|cipher[_\-]?key)\s*[=:"\s]+["\']([^"\']{16,})["\']', "risk": "Critical", "validate": _v_encrypt_key},
+        {"name": "Mailgun API Key", "regex": r'\b(key-[A-Za-z0-9]{32})\b', "risk": "High", "validate": _v_mailgun},
+        {"name": "Mailchimp API Key", "regex": r'\b([A-Za-z0-9]{32}-us\d{2})\b', "risk": "High", "validate": _v_mailchimp},
+        {"name": "Ansible Vault Password", "regex": r'(?:ansible[_\-]?vault[_\-]?password|VAULT_PASS)\s*[=:"\s]+["\']([^"\']{8,})["\']', "risk": "Critical", "validate": _v_ansible},
+        {"name": "Docker Registry Password", "regex": r'(?:docker[_\-]?(?:hub[_\-]?)?pass(?:word)?|DOCKER_PASS)\s*[=:"\s]+["\']([^"\']{6,})["\']', "risk": "High", "validate": _v_docker},
+        {"name": "SSH Private Key (inline)", "regex": r'(?:-----BEGIN (?:RSA|DSA|EC|OPENSSH) PRIVATE KEY-----)|(?:ssh-rsa AAAA[A-Za-z0-9+/]{100,})', "risk": "Critical", "validate": _v_true_val},
+    ]
+
+    _NOT_LEAK_SIGNALS = [
+        r'process\.env\.', r'os\.environ', r'os\.getenv\(', r'\$\{[A-Z_]+\}', r'%[A-Z_]+%',
+        r'getenv\(', r'ENV\[[\'"]', r'config\(["\']', r'env\(["\']', r'settings\.',
+        r'YOUR_.*?_(?:KEY|SECRET|TOKEN|PASSWORD|HERE)', r'<YOUR_', r'REPLACE_ME',
+        r'INSERT_YOUR', r'ADD_YOUR', r'EXAMPLE_', r'PLACEHOLDER', r'x{4,}', r'\*{4,}',
+        r'\.\.\.+', r'changeme', r'secret_here', r'your[-_]?(?:api[-_]?)?key',
+        r'none|null|undefined|n/a', r'example\.(?:com|org|net)', r'localhost(?::\d+)?/test',
+        r'test[-_]?(?:key|secret|token)', r'fake[-_]?(?:key|secret)', r'sample[-_]?(?:key|secret)',
+        r'demo[-_]?(?:key|secret)',
+    ]
+
+    MIN_ENTROPY = {"Critical": 3.0, "High": 3.2, "Medium": 2.5, "Info": 0.0}
+
+    def __init__(self, client: "HTTPClient", ai: "AIEngine", console_obj: Any, finding_class: Any = None, max_js_files: int = 50):
+        self.client = client
+        self.ai = ai
+        self.console = console_obj
+        self.FindingClass = finding_class
+        self.max_js_files = max_js_files
+        self._compiled_not_leak = [re.compile(sig, re.IGNORECASE) for sig in self._NOT_LEAK_SIGNALS]
+        self._compiled_patterns = self._compile_patterns()
+        self._seen_values: set = set()
+
+    def _compile_patterns(self) -> list:
+        compiled = []
+        for pattern in self.SECRET_PATTERNS:
+            try:
+                compiled.append({**pattern, "_re": re.compile(pattern["regex"], re.IGNORECASE | re.MULTILINE)})
+            except re.error:
+                pass
+        return compiled
+
+    def scan(self, endpoints: list, page_cache: dict, target: str) -> list:
+        self._seen_values = set()
+        self.console.print(f"  [dim]  {len(page_cache)} cached pages + JS files scanning...[/dim]")
+        findings: list = []
+        scanned_urls: set = set()
+        candidates_found = 0
+        candidates_confirmed = 0
+        for url, resp in page_cache.items():
+            if url in scanned_urls:
+                continue
+            scanned_urls.add(url)
+            body = resp.get("body", "") if isinstance(resp, dict) else ""
+            if not body:
+                continue
+            content_type = resp.get("headers", {}).get("content-type", "") if isinstance(resp, dict) else ""
+            new_findings, cand, conf = self._scan_content(body, url, content_type)
+            findings.extend(new_findings)
+            candidates_found += cand
+            candidates_confirmed += conf
+        js_urls = self._discover_js_urls(endpoints, page_cache, target)
+        self.console.print(f"  [dim]  {len(js_urls)} JS file(s) to scan[/dim]")
+        for js_url in js_urls:
+            if js_url in scanned_urls:
+                continue
+            scanned_urls.add(js_url)
+            try:
+                response = self.client.get(js_url)
+            except Exception as exc:
+                self.console.print(f"  [dim red]  JS fetch error: {js_url[:60]} — {exc}[/dim red]")
+                continue
+            if response.get("status") != 200 or not response.get("body"):
+                continue
+            new_findings, cand, conf = self._scan_content(response["body"], js_url, "application/javascript")
+            findings.extend(new_findings)
+            candidates_found += cand
+            candidates_confirmed += conf
+        findings.extend(self._probe_config_files(target))
+        self.console.print(f"  [green]✓ Source Code Review: {candidates_found} candidate(s) → {candidates_confirmed} confirmed → {len(findings)} finding(s)[/green]")
+        return findings
+
+    def _scan_content(self, body: str, url: str, content_type: str) -> tuple:
+        findings = []
+        candidates = 0
+        confirmed = 0
+        lines = body.split("\n")
+        line_map = {idx + 1: line for idx, line in enumerate(lines)}
+        for pattern in self._compiled_patterns:
+            for match in pattern["_re"].finditer(body):
+                matched_value = match.group(1) if match.lastindex else match.group(0)
+                matched_value = matched_value.strip().strip("\"'")
+                if not matched_value or len(matched_value) < 4:
+                    continue
+                val_hash = hashlib.md5(f"{pattern['name']}:{matched_value}".encode()).hexdigest()
+                if val_hash in self._seen_values:
+                    continue
+                self._seen_values.add(val_hash)
+                try:
+                    validate_fn = pattern.get("validate")
+                    if validate_fn and not validate_fn(matched_value):
+                        continue
+                except Exception:
+                    continue
+                context_window = self._get_context(body, match.start(), window=300)
+                if self._is_not_leak(matched_value, context_window):
+                    continue
+                risk = pattern["risk"]
+                min_entropy = self.MIN_ENTROPY.get(risk, 2.5)
+                if min_entropy > 0:
+                    entropy = self._shannon_entropy(matched_value)
+                    if entropy < min_entropy:
+                        continue
+                candidates += 1
+                line_no = body[:match.start()].count("\n") + 1
+                line_text = line_map.get(line_no, "").strip()[:120]
+                ctx_start = max(1, line_no - 3)
+                ctx_end = min(len(line_map), line_no + 3)
+                context_lines = "\n".join(f"  {n:4d}: {line_map.get(n, '')[:100]}" for n in range(ctx_start, ctx_end + 1))
+                self.console.print(f"  [yellow]  🔍 Candidate [{risk}]: {pattern['name']} in {url.split('/')[-1] or url}:{line_no}[/yellow]")
+                ai_result = self._ai_classify(pattern_name=pattern["name"], matched_value=matched_value, context_lines=context_lines, url=url, suggested_risk=risk)
+                if not ai_result.get("is_real_leak", False):
+                    self.console.print(f"  [dim]    → AI: NOT a real leak — {str(ai_result.get('reason', ''))[:80]}[/dim]")
+                    continue
+                confirmed += 1
+                final_risk = ai_result.get("risk", risk)
+                color = {"Critical": "bold red", "High": "red", "Medium": "yellow", "Low": "cyan", "Info": "dim"}.get(final_risk, "white")
+                self.console.print(f"  [{color}]  🚨 CONFIRMED [{final_risk}]: {ai_result.get('title', pattern['name'])}[/{color}]")
+                masked = self._mask_value(matched_value, risk)
+                finding = self._make_finding(
+                    title=ai_result.get("title", f"Hardcoded Secret: {pattern['name']} in {url.split('/')[-1] or url}"),
+                    risk=final_risk,
+                    confidence=ai_result.get("confidence", 80),
+                    url=url,
+                    evidence=f"{pattern['name']} found at line {line_no}. AI: {str(ai_result.get('what_is_it', ''))[:150]}",
+                    tool_output=f"Pattern: {pattern['name']}\nValue: {masked}\nLine {line_no}: {line_text}\nContext:\n{context_lines}",
+                    request_raw=f"GET {url}",
+                    response_raw=f"Line {line_no}: {line_text}",
+                    exploit_cmd=ai_result.get("exploit_hint", f"# Leaked credential at {url} line {line_no}"),
+                    remediation=ai_result.get("remediation", "Move secrets to environment variables. Rotate compromised credentials immediately."),
+                    confirmed=final_risk in ("Critical", "High"),
+                    param="source_code",
+                    payload="",
+                    baseline_diff="source_code_review",
+                )
+                if finding:
+                    findings.append(finding)
+        return findings, candidates, confirmed
+
+    def _ai_classify(self, pattern_name: str, matched_value: str, context_lines: str, url: str, suggested_risk: str) -> dict:
+        prompt = f"""You are a security expert analyzing source code for leaked secrets.
+
+FOUND IN SOURCE CODE:
+  URL/File:      {url}
+  Pattern name:  {pattern_name}
+  Suggested risk: {suggested_risk}
+
+<untrusted_content>
+  Matched value: {matched_value[:80]!r}
+
+  CODE CONTEXT (surrounding lines):
+{context_lines}
+</untrusted_content>
+
+YOUR TASK: Determine if this is a REAL hardcoded secret/credential leak.
+
+CLASSIFICATION RULES:
+
+DEFINITELY NOT A LEAK (return is_real_leak: false):
+- Analytics/tracking IDs that are PUBLIC BY DESIGN:
+  * Google Analytics (UA-xxxxx, G-xxxxx, GTM-xxxxx)
+  * Yandex Metrica counter IDs (8-9 digit numbers)
+  * Facebook Pixel IDs
+- Values from environment variables: process.env.X, os.environ['X'], getenv(), env()
+- Template placeholders: YOUR_KEY_HERE, <API_KEY>, xxx, ***, ...
+- Demo/test/sandbox keys clearly labeled as such
+- Public API keys that are read-only and restricted by domain/referrer
+
+REAL LEAK (return is_real_leak: true):
+- AWS credentials (AKIA... + secret)
+- Private keys (RSA, EC, SSH)
+- Database passwords that look real (not 'password123' demos)
+- JWT secrets hardcoded in source
+- Stripe/PayPal LIVE keys (sk_live_...)
+- OAuth client secrets
+- Service account JSON keys
+- Any bearer token or API key with high entropy that is NOT clearly public
+- Telegram/Slack/Discord bot tokens
+
+Return JSON:
+{{
+  "is_real_leak": true/false,
+  "title": "Short descriptive title",
+  "what_is_it": "What this credential is and what access it provides",
+  "risk": "Critical|High|Medium|Low|Info",
+  "confidence": 0-100,
+  "reason": "Why this IS or IS NOT a real leak (cite context)",
+  "exploit_hint": "curl/python command showing how this could be exploited",
+  "remediation": "Specific steps to fix"
+}}"""
+        try:
+            result = self.ai._call(prompt, cache=False)
+        except Exception:
+            result = None
+        if isinstance(result, dict) and "is_real_leak" in result:
+            return result
+        entropy = self._shannon_entropy(matched_value)
+        is_real = entropy >= 3.5 and len(matched_value) >= 20 and suggested_risk in ("Critical", "High")
+        return {
+            "is_real_leak": is_real,
+            "title": f"{pattern_name} in source code",
+            "what_is_it": f"Potential {pattern_name}",
+            "risk": suggested_risk,
+            "confidence": 60 if is_real else 30,
+            "reason": f"Heuristic: entropy={entropy:.2f}, len={len(matched_value)}",
+            "remediation": "Move to environment variables. Rotate if real.",
+        }
+
+    def _probe_config_files(self, target: str) -> list:
+        findings = []
+        base = target.rstrip("/")
+        config_paths = [
+            "/.env", "/.env.local", "/.env.production", "/.env.backup", "/.env.example",
+            "/config.json", "/config.yaml", "/config.yml", "/appsettings.json", "/appsettings.Development.json",
+            "/application.properties", "/application.yml", "/web.config", "/.git/config", "/wp-config.php",
+            "/config/database.yml", "/config/secrets.yml", "/config/credentials.yml", "/.npmrc", "/.pypirc",
+            "/composer.json", "/Dockerfile", "/docker-compose.yml", "/.travis.yml", "/.circleci/config.yml",
+            "/Jenkinsfile", "/cloudbuild.yaml",
+        ]
+        for path in config_paths:
+            url = base + path
+            try:
+                response = self.client.get(url)
+            except Exception as exc:
+                self.console.print(f"  [dim]  Config probe error: {url[:60]} — {exc}[/dim]")
+                continue
+            if response.get("status") != 200 or not response.get("body"):
+                continue
+            body = response.get("body", "")
+            if len(body) < 10:
+                continue
+            self.console.print(f"  [yellow]  📄 Config file exposed: {url}[/yellow]")
+            new_findings, _, _ = self._scan_content(body, url, "text/plain")
+            if new_findings:
+                findings.extend(new_findings)
+                continue
+            if any(sp in path for sp in [".env", "config.json", "appsettings", "secrets.yml", "credentials", "wp-config", "database.yml"]):
+                finding = self._make_finding(
+                    title=f"Configuration File Exposed: {path}",
+                    risk="High",
+                    confidence=85,
+                    url=url,
+                    evidence=f"Configuration file accessible without authentication: {path}",
+                    tool_output=body[:500],
+                    request_raw=f"GET {url}",
+                    response_raw=body[:500],
+                    exploit_cmd=f"curl -s '{url}'",
+                    remediation="Block web access to configuration files. Add to .htaccess or nginx deny rules. Move config outside web root.",
+                    confirmed=True,
+                    param="URL_PATH",
+                    payload="",
+                    baseline_diff="config_exposed",
+                    owasp_id="A05",
+                    owasp_name="Security Misconfiguration",
+                )
+                if finding:
+                    findings.append(finding)
+        return findings
+
+    def _discover_js_urls(self, endpoints: list, page_cache: dict, target: str) -> List[str]:
+        js_urls = set()
+        parsed_target = urllib.parse.urlparse(target)
+        base_host = parsed_target.netloc
+        allowed_schemes = {"http", "https"}
+        for url, resp in page_cache.items():
+            body = resp.get("body", "") if isinstance(resp, dict) else ""
+            if not body:
+                continue
+            for match in re.finditer(r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']', body, re.I):
+                js_ref = match.group(1)
+                try:
+                    js_abs = urllib.parse.urljoin(url, js_ref)
+                    parsed = urllib.parse.urlparse(js_abs)
+                    if parsed.scheme in allowed_schemes and parsed.netloc == base_host and ".." not in parsed.path:
+                        js_urls.add(js_abs)
+                except Exception:
+                    pass
+            for match in re.finditer(r'"([^"]+\.js)"', body):
+                try:
+                    js_abs = urllib.parse.urljoin(url, match.group(1))
+                    parsed = urllib.parse.urlparse(js_abs)
+                    if parsed.scheme in allowed_schemes and parsed.netloc == base_host and "node_modules" not in js_abs and ".." not in parsed.path:
+                        js_urls.add(js_abs)
+                except Exception:
+                    pass
+        static_bases: set = set()
+        for url in list(js_urls):
+            parsed = urllib.parse.urlparse(url)
+            path = parsed.path.lower()
+            if any(x in path for x in ["/static/", "/assets/", "/js/", "/dist/"]):
+                dir_path = parsed.path.rsplit("/", 1)[0]
+                static_bases.add(urllib.parse.urlunparse(parsed._replace(path=dir_path, query="")))
+        for base_dir in static_bases:
+            for chunk in ["main.js", "app.js", "bundle.js", "runtime.js", "vendor.js", "chunk.js", "index.js"]:
+                candidate = f"{base_dir}/{chunk}"
+                parsed_candidate = urllib.parse.urlparse(candidate)
+                if parsed_candidate.scheme in allowed_schemes and parsed_candidate.netloc == base_host:
+                    js_urls.add(candidate)
+        return list(js_urls)[: self.max_js_files]
+
+    def _is_not_leak(self, value: str, context: str) -> bool:
+        combined = (value + " " + context).lower()
+        return any(pattern.search(combined) for pattern in self._compiled_not_leak)
+
+    @staticmethod
+    def _shannon_entropy(value: str) -> float:
+        if not value:
+            return 0.0
+        freq = {}
+        for char in value:
+            freq[char] = freq.get(char, 0) + 1
+        total = len(value)
+        entropy = -sum((count / total) * math.log2(count / total) for count in freq.values())
+        return round(entropy, 3)
+
+    @staticmethod
+    def _mask_value(value: str, risk: str) -> str:
+        if risk == "Info":
+            return value
+        length = len(value)
+        if length <= 6:
+            return value[:2] + "*" * max(length - 2, 0)
+        return value[:4] + "*" * max(4, length - 6) + value[-2:]
+
+    @staticmethod
+    def _get_context(body: str, pos: int, window: int = 300) -> str:
+        start = max(0, pos - window // 2)
+        end = min(len(body), pos + window // 2)
+        return body[start:end]
+
+    def _make_finding(
+        self,
+        title: str,
+        risk: str,
+        confidence: int,
+        url: str,
+        evidence: str,
+        tool_output: str,
+        request_raw: str,
+        response_raw: str,
+        exploit_cmd: str,
+        remediation: str,
+        confirmed: bool,
+        param: str = "source_code",
+        payload: str = "",
+        baseline_diff: str = "source_code_review",
+        owasp_id: str = "A02",
+        owasp_name: str = "Cryptographic Failures",
+        method: str = "GET",
+    ):
+        FindingClass = self.FindingClass or Finding
+        try:
+            return FindingClass(
+                owasp_id=owasp_id,
+                owasp_name=owasp_name,
+                title=title,
+                risk=risk,
+                confidence=confidence,
+                url=url,
+                method=method,
+                param=param,
+                payload=payload,
+                evidence=evidence,
+                baseline_diff=baseline_diff,
+                tool_output=tool_output,
+                request_raw=request_raw,
+                response_raw=response_raw,
+                exploit_cmd=exploit_cmd,
+                remediation=remediation,
+                confirmed=confirmed,
+                tool="source_code_review",
+            )
+        except Exception:
+            return None
+
+
 class NucleiRunner:
     OWASP_MAP = {
         "sqli":"A03","xss":"A03","lfi":"A03","rce":"A03","ssti":"A03",
@@ -8244,6 +8837,24 @@ class PentestPipeline:
                 nep = discoverer.discover(nep)
                 enriched.append(nep)
 
+        console.print(f"\n[cyan]━━ SOURCE CODE REVIEW ━━[/cyan]")
+        src_reviewer = SourceCodeReviewer(
+            client=self.client,
+            ai=self.ai,
+            console_obj=console,
+            finding_class=Finding,
+        )
+        src_findings = src_reviewer.scan(
+            endpoints=enriched,
+            page_cache=page_cache,
+            target=target,
+        )
+        if src_findings:
+            console.print(
+                f"  [bold red]  🔑 {len(src_findings)} secret(s) found "
+                f"in source code![/bold red]"
+            )
+
         # ACL bypass findings from crawler
         acl_findings: List[Finding] = []
         for bypass in crawler.acl_findings:
@@ -8302,6 +8913,7 @@ class PentestPipeline:
         )
         limit   = len(planned) if self.args.deep else min(len(planned), 35)
         all_findings: List[Finding] = list(bac_findings)
+        all_findings.extend(src_findings)
 
         # CSRF on login forms (auth endpoints)
         oauth_findings: List[Finding] = []
