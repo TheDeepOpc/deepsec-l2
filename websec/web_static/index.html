@@ -1,0 +1,1592 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PentestAI v8.0 — uzCERT</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@600;700;800&display=swap');
+:root{
+  --bg0:#060810;--bg1:#0b0f1a;--bg2:#101620;--bg3:#151d2e;--bg4:#1a2438;
+  --border:#1e2d45;--border2:#243352;--text:#bdc8e2;--muted:#5a7099;--dim:#3a506b;
+  --accent:#00d4ff;--accent2:#0099cc;--green:#00e676;--red:#ff1744;
+  --orange:#ff6d00;--yellow:#ffd740;--purple:#ea80fc;--teal:#1de9b6;
+  --critical:#ff1744;--high:#ff6d00;--medium:#ffd740;--low:#40c4ff;--info:#78909c;
+  --mono:'JetBrains Mono',monospace;--head:'Syne',sans-serif;
+  --r:6px;--r2:10px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+     background:var(--bg0);color:var(--text);display:flex;min-height:100vh;
+     font-size:14px;line-height:1.6}
+#sidebar{width:232px;background:var(--bg1);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:200;
+  transition:transform .25s}
+.logo{padding:20px 16px 16px;border-bottom:1px solid var(--border)}
+.logo-name{font-family:var(--head);font-size:18px;font-weight:800;
+  background:linear-gradient(135deg,var(--accent),var(--teal));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:1px}
+.logo-ver{font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px}
+.logo-core{font-size:10px;color:var(--dim);margin-top:3px;display:flex;align-items:center;gap:4px}
+.core-dot{width:6px;height:6px;border-radius:50%;background:var(--green);
+  box-shadow:0 0 6px var(--green);animation:glow 2s infinite}
+@keyframes glow{0%,100%{opacity:1;box-shadow:0 0 6px var(--green)}50%{opacity:.5;box-shadow:0 0 12px var(--green)}}
+.nav{flex:1;padding:8px 0;overflow-y:auto}
+.nav-section{font-size:9px;font-weight:700;color:var(--dim);text-transform:uppercase;
+  letter-spacing:1px;padding:12px 16px 4px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 16px;cursor:pointer;
+  font-size:13px;color:var(--muted);border-left:2px solid transparent;transition:all .12s;
+  user-select:none;position:relative}
+.nav-item:hover{color:var(--text);background:var(--bg2)}
+.nav-item.active{color:var(--accent);background:linear-gradient(90deg,#00d4ff12,transparent);
+  border-left-color:var(--accent)}
+.nav-icon{font-size:15px;width:20px;text-align:center;flex-shrink:0}
+.nav-badge{position:absolute;right:12px;background:var(--red);color:#fff;
+  font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;font-family:var(--mono)}
+.nav-badge.green{background:var(--green);color:#000}
+.nav-badge.blue{background:var(--accent);color:#000}
+.sidebar-foot{padding:12px 16px;border-top:1px solid var(--border)}
+.foot-status{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px;font-family:var(--mono)}
+.foot-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:glow 2s infinite}
+#main{margin-left:232px;flex:1;display:flex;flex-direction:column;min-height:100vh}
+.topbar{height:50px;background:var(--bg1);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 20px;gap:12px;position:sticky;top:0;z-index:100}
+.topbar-title{font-family:var(--head);font-size:16px;font-weight:700;flex:1;color:var(--text)}
+.topbar-actions{display:flex;gap:8px;align-items:center}
+.page{padding:20px;display:none;animation:fadein .2s}
+.page.active{display:block}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+h2{font-family:var(--head);font-size:18px;font-weight:700;margin-bottom:16px;
+  display:flex;align-items:center;gap:10px}
+h3{font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.6px;margin-bottom:12px}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:18px}
+.stat{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);padding:16px;
+  text-align:center;transition:border-color .2s;cursor:default}
+.stat:hover{border-color:var(--border2)}
+.stat-num{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1;margin-bottom:4px}
+.stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.stat-sub{font-size:10px;color:var(--dim);margin-top:3px}
+.card{background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);
+  padding:18px;margin-bottom:14px}
+.card-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.6px;margin-bottom:14px;display:flex;align-items:center;gap:8px;
+  justify-content:space-between}
+.form-group{margin-bottom:14px}
+.form-label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px;
+  font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.form-input,.form-select,.form-textarea{
+  width:100%;background:var(--bg0);border:1px solid var(--border);
+  border-radius:var(--r);padding:9px 12px;color:var(--text);
+  font-size:13px;outline:none;transition:border .15s;font-family:inherit}
+.form-textarea{resize:vertical;min-height:80px;font-family:var(--mono);font-size:12px}
+.form-input:focus,.form-select:focus,.form-textarea:focus{border-color:var(--accent);
+  box-shadow:0 0 0 3px #00d4ff18}
+.form-select{cursor:pointer}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.form-hint{font-size:11px;color:var(--dim);margin-top:4px}
+.form-check{display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer}
+.form-check input[type=checkbox]{accent-color:var(--accent);cursor:pointer;width:14px;height:14px}
+.form-check label{font-size:13px;cursor:pointer}
+.options-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}
+.btn{padding:8px 18px;border-radius:var(--r);border:none;cursor:pointer;
+  font-size:13px;font-weight:600;transition:all .15s;display:inline-flex;
+  align-items:center;gap:7px;font-family:inherit;white-space:nowrap}
+.btn-primary{background:var(--accent);color:#000}
+.btn-primary:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 4px 16px #00d4ff33}
+.btn-success{background:var(--green);color:#000}
+.btn-success:hover{filter:brightness(1.1)}
+.btn-danger{background:var(--red);color:#fff}
+.btn-danger:hover{filter:brightness(1.1)}
+.btn-warn{background:var(--orange);color:#fff}
+.btn-warn:hover{filter:brightness(1.1)}
+.btn-ghost{background:var(--bg2);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{background:var(--bg3);border-color:var(--border2)}
+.btn-accent{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.btn-accent:hover{background:#00d4ff18}
+.btn-lg{padding:12px 28px;font-size:15px}
+.btn-sm{padding:5px 12px;font-size:12px}
+.btn-xs{padding:3px 8px;font-size:10px}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important}
+.btn-icon{padding:6px 10px}
+.btn-full{width:100%;justify-content:center}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+.badge-cr{background:#ff174422;color:var(--critical);border:1px solid #ff174440}
+.badge-hi{background:#ff6d0022;color:var(--high);border:1px solid #ff6d0040}
+.badge-me{background:#ffd74022;color:var(--medium);border:1px solid #ffd74040}
+.badge-lo{background:#40c4ff22;color:var(--low);border:1px solid #40c4ff40}
+.badge-in{background:#78909c22;color:var(--info);border:1px solid #78909c40}
+.badge-ok{background:#00e67622;color:var(--green);border:1px solid #00e67640}
+.badge-run{background:#00d4ff22;color:var(--accent);border:1px solid #00d4ff40;animation:glow 1.5s infinite}
+.badge-done{background:#00e67622;color:var(--green);border:1px solid #00e67640}
+.badge-fail,.badge-stopped{background:#ff174422;color:var(--red);border:1px solid #ff174440}
+.badge-queue{background:#ffd74022;color:var(--yellow);border:1px solid #ffd74040}
+.badge-stop{background:#78909c22;color:var(--muted);border:1px solid #78909c40}
+.badge-oob{background:#ea80fc22;color:var(--purple);border:1px solid #ea80fc40}
+.badge-conf{background:#00e67622;color:var(--green);border:1px solid #00e67640}
+.badge-unconf{background:#ff6d0022;color:var(--orange);border:1px solid #ff6d0040}
+.tbl-wrap{overflow-x:auto;border-radius:var(--r);border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead{background:var(--bg2)}
+th{text-align:left;padding:9px 14px;font-size:10px;font-weight:700;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--bg2)}
+.tbl-mono{font-family:var(--mono);font-size:11px}
+.tbl-url{font-family:var(--mono);font-size:11px;color:var(--accent);
+  max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.terminal{background:#010409;border:1px solid var(--border);border-radius:var(--r2);
+  font-family:var(--mono);font-size:12px;line-height:1.6;padding:14px;
+  overflow-y:auto;scroll-behavior:smooth}
+.terminal.h-lg{height:520px}
+.terminal.h-md{height:360px}
+.terminal.h-sm{height:200px}
+.log-line{margin-bottom:1px;white-space:pre-wrap;word-break:break-all;padding:1px 0}
+.log-red,.log-critical{color:#ff4060;font-weight:700}
+.log-orange,.log-high{color:#ff8c42}
+.log-yellow,.log-medium{color:#ffd740}
+.log-green,.log-success{color:#00e676}
+.log-error{color:#ff5252}
+.log-cyan,.log-ai{color:var(--accent)}
+.log-step{color:var(--teal);font-weight:600}
+.log-dim,.log-info{color:#4a6080}
+.log-ts{color:var(--dim);margin-right:8px;font-size:10px}
+.prog-wrap{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-bottom:14px}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--teal));
+  border-radius:2px;transition:width .6s cubic-bezier(.4,0,.2,1)}
+.find-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r2);
+  margin-bottom:8px;overflow:hidden;transition:border-color .15s}
+.find-card:hover{border-color:var(--border2)}
+.find-hdr,.find-head{display:flex;align-items:center;gap:9px;padding:12px 14px;cursor:pointer;
+  transition:background .12s;user-select:none}
+.find-hdr:hover,.find-head:hover{background:var(--bg3)}
+.find-title{font-size:13px;font-weight:600;flex:1;color:var(--text)}
+.find-body{padding:14px 16px;border-top:1px solid var(--border);display:none}
+.find-body.open,.find-card.open .find-body{display:block}
+.meta-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:14px}
+.meta-item{background:var(--bg1);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px}
+.meta-key{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+.meta-val{font-size:11px;color:var(--text);margin-top:3px;word-break:break-all;font-family:var(--mono)}
+.section-label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.5px;margin:12px 0 6px;display:flex;align-items:center;gap:6px}
+.code-block{background:#010409;border:1px solid var(--border);border-radius:var(--r);
+  padding:10px 14px;font-family:var(--mono);font-size:11px;overflow-x:auto;
+  white-space:pre-wrap;word-break:break-all;position:relative;max-height:200px;overflow-y:auto}
+.code-block.green{color:var(--green);border-color:#00e67630}
+.code-block.cyan{color:var(--accent);border-color:#00d4ff30}
+.code-block.dim{color:var(--muted)}
+.code-block.red{color:#ff8a80;border-color:#ff174430}
+.copy-btn{position:absolute;top:6px;right:6px;padding:2px 8px;font-size:9px;
+  background:var(--bg3);border:1px solid var(--border);border-radius:4px;
+  cursor:pointer;color:var(--muted);transition:all .1s;z-index:1}
+.copy-btn:hover{color:var(--text);background:var(--bg4)}
+.conf-bar{height:4px;background:var(--bg0);border-radius:2px;margin-top:4px;overflow:hidden}
+.conf-fill{height:100%;border-radius:2px;transition:width .4s}
+.owasp-chart{display:flex;flex-direction:column;gap:6px}
+.owasp-row{display:flex;align-items:center;gap:10px}
+.owasp-id{font-family:var(--mono);font-size:11px;color:var(--accent);width:36px;flex-shrink:0}
+.owasp-bar-wrap{flex:1;height:18px;background:var(--bg0);border-radius:3px;overflow:hidden}
+.owasp-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--teal));
+  border-radius:3px;transition:width .6s ease;display:flex;align-items:center;
+  padding-left:6px;font-size:9px;color:#000;font-weight:700}
+.owasp-count{font-family:var(--mono);font-size:11px;color:var(--muted);width:24px;text-align:right}
+.risk-bars{display:flex;flex-direction:column;gap:7px}
+.risk-row{display:flex;align-items:center;gap:10px}
+.risk-label{font-size:11px;width:70px;flex-shrink:0}
+.risk-bar-wrap{flex:1;height:16px;background:var(--bg0);border-radius:3px;overflow:hidden}
+.risk-bar{height:100%;border-radius:3px;transition:width .6s ease;min-width:2px}
+.risk-count{font-family:var(--mono);font-size:11px;color:var(--muted);width:28px;text-align:right}
+.tool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:7px}
+.tool-item{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
+  padding:9px 12px;display:flex;align-items:center;gap:8px;font-size:12px;font-family:var(--mono)}
+.tool-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.tool-ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+.tool-no{background:var(--red)}
+.filter-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.filter-btn{padding:5px 13px;border-radius:20px;border:1px solid var(--border);
+  background:transparent;color:var(--muted);font-size:11px;cursor:pointer;
+  transition:all .12s;font-weight:600;font-family:inherit}
+.filter-btn:hover{color:var(--text);border-color:var(--border2)}
+.filter-btn.active{color:var(--accent);border-color:var(--accent);background:#00d4ff12}
+.chat-box{display:flex;flex-direction:column;border:1px solid var(--border);
+  border-radius:var(--r2);background:var(--bg1);overflow:hidden}
+.chat-msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;
+  min-height:300px;max-height:440px}
+.msg-row{display:flex;flex-direction:column}
+.msg-row.user{align-items:flex-end}
+.msg-row.ai{align-items:flex-start}
+.bubble{padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.55;max-width:82%}
+.msg-row.user .bubble{background:var(--accent);color:#000;border-radius:12px 12px 2px 12px}
+.msg-row.ai .bubble{background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 2px}
+/* compat for old JS that uses .msg class */
+.msg{padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.55;max-width:82%}
+.msg-user{align-self:flex-end;background:var(--accent);color:#000;border-radius:12px 12px 2px 12px}
+.msg-ai{align-self:flex-start;background:var(--bg2);border:1px solid var(--border);border-radius:12px 12px 12px 2px}
+.rule-chip{margin-top:5px;font-size:10px;color:var(--green);font-family:var(--mono);
+  background:#00e67615;padding:3px 8px;border-radius:4px;border:1px solid #00e67630}
+.chat-foot{padding:11px 14px;border-top:1px solid var(--border);display:flex;gap:8px;background:var(--bg1)}
+.chat-input{flex:1;background:var(--bg0);border:1px solid var(--border);border-radius:var(--r);
+  padding:9px 12px;color:var(--text);font-size:13px;outline:none}
+.chat-input:focus{border-color:var(--accent)}
+.lesson-item{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
+  padding:10px 12px;margin-bottom:7px}
+.lesson-rule{font-family:var(--mono);font-size:11px;color:var(--green);margin:4px 0}
+.lesson-fb{font-size:11px;color:var(--muted)}
+.ep-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);
+  padding:10px 14px;margin-bottom:6px;display:flex;align-items:center;gap:10px;
+  transition:border-color .12s;cursor:pointer}
+.ep-card:hover{border-color:var(--border2)}
+.ep-url{font-family:var(--mono);font-size:11px;color:var(--accent);flex:1;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ep-score-bar{width:60px;height:6px;background:var(--bg0);border-radius:3px;overflow:hidden}
+.ep-score-fill{height:100%;border-radius:3px}
+.modal-overlay{position:fixed;inset:0;background:#00000088;z-index:500;
+  display:none;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.open{display:flex}
+.modal{background:var(--bg1);border:1px solid var(--border);border-radius:var(--r2);
+  max-width:900px;width:100%;max-height:85vh;overflow-y:auto;padding:24px;position:relative}
+.modal-close{position:absolute;top:14px;right:14px;background:var(--bg2);
+  border:1px solid var(--border);border-radius:var(--r);padding:4px 10px;
+  cursor:pointer;color:var(--muted);font-size:13px;transition:all .12s}
+.modal-close:hover{color:var(--text)}
+.modal h3{font-family:var(--head);font-size:16px;margin-bottom:16px;padding-right:40px}
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px}
+.tab{padding:8px 18px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;
+  border-bottom:2px solid transparent;transition:all .12s;margin-bottom:-1px;font-family:inherit}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.diff-col{background:var(--bg2);border:1px solid var(--border);border-radius:var(--r);padding:12px}
+.diff-header{font-size:11px;font-weight:700;color:var(--muted);margin-bottom:10px;
+  text-transform:uppercase;letter-spacing:.5px}
+.empty{text-align:center;padding:50px 20px;color:var(--muted)}
+.empty-icon{font-size:44px;margin-bottom:12px;opacity:.5}
+.empty-text{font-size:14px}
+.divider{border:none;border-top:1px solid var(--border);margin:14px 0}
+.text-mono{font-family:var(--mono);font-size:11px}
+.text-accent{color:var(--accent)}
+.text-green{color:var(--green)}
+.text-red{color:var(--red)}
+.text-muted{color:var(--muted)}
+.text-dim{color:var(--dim)}
+.flex{display:flex;align-items:center;gap:10px}
+.flex-between{display:flex;align-items:center;justify-content:space-between}
+.flex-wrap{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.gap4{gap:4px}.gap8{gap:8px}.gap12{gap:12px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.mt4{margin-top:4px}.mt8{margin-top:8px}.mt14{margin-top:14px}.mt20{margin-top:20px}
+.mb8{margin-bottom:8px}.mb14{margin-bottom:14px}
+.hidden{display:none!important}
+.pulse{animation:glow 1.5s infinite}
+.chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);
+  border-radius:999px;padding:4px 9px;font-size:.7rem;background:rgba(0,212,255,.07)}
+.status-badge{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);
+  border-radius:999px;padding:4px 9px;font-size:.7rem;font-weight:700}
+.status-queued{background:rgba(148,163,184,.14);color:#9eb5d4;border-color:rgba(148,163,184,.25)}
+.status-running{background:rgba(0,212,255,.14);color:var(--accent);border-color:rgba(0,212,255,.3);animation:glow 1.4s infinite}
+.status-done{background:rgba(0,230,118,.14);color:var(--green);border-color:rgba(0,230,118,.3)}
+.status-failed,.status-stopped,.status-stopping{background:rgba(255,23,68,.14);color:#ff9bb5;border-color:rgba(255,23,68,.3)}
+.kv-row{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.kv-label{color:var(--muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.4px}
+.kv-val{font-size:.82rem;word-break:break-all}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--bg0)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--r);padding:10px 16px;font-size:13px;z-index:9999;
+  animation:slideup .25s ease;max-width:320px}
+@keyframes slideup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.toast.ok{border-color:var(--green);color:var(--green)}
+.toast.err{border-color:var(--red);color:var(--red)}
+a.btn{text-decoration:none}
+@media(max-width:1080px){.g4,.g3,.g2,.form-row,.diff-grid{grid-template-columns:1fr}}
+@media(max-width:800px){#main{margin-left:0}#sidebar{position:static;height:auto}}
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside id="sidebar">
+  <div class="logo">
+    <div class="logo-name">PENTEST AI</div>
+    <div class="logo-ver">v8.0 · True Agentic · OWASP Top 10</div>
+    <div class="logo-core"><span class="core-dot"></span><span id="apiState">API tekshirilmoqda...</span></div>
+  </div>
+  <nav class="nav">
+    <div class="nav-section">Asosiy</div>
+    <div class="nav-item active" data-page="dashboard" onclick="setPageNav('dashboard')">
+      <span class="nav-icon">⊞</span>Dashboard</div>
+    <div class="nav-item" data-page="new-scan" onclick="setPageNav('new-scan')">
+      <span class="nav-icon">▶</span>Yangi Scan</div>
+    <div class="nav-item" data-page="live-scan" onclick="setPageNav('live-scan')">
+      <span class="nav-icon">◉</span>Live Scan
+      <span class="nav-badge blue" id="nb-live" style="display:none">●</span></div>
+    <div class="nav-section">Natijalar</div>
+    <div class="nav-item" data-page="scanned" onclick="setPageNav('scanned')">
+      <span class="nav-icon">◫</span>Scan Tarixi
+      <span class="nav-badge" id="nb-scanned">0</span></div>
+    <div class="nav-item" data-page="findings" onclick="setPageNav('findings')">
+      <span class="nav-icon">⚑</span>Findings
+      <span class="nav-badge" id="nb-findings">0</span></div>
+    <div class="nav-item" data-page="repeater" onclick="setPageNav('repeater')">
+      <span class="nav-icon">⇄</span>AI Repeater</div>
+    <div class="nav-section">AI Tizim</div>
+    <div class="nav-item" data-page="kb" onclick="setPageNav('kb')">
+      <span class="nav-icon">🧠</span>Knowledge Base
+      <span class="nav-badge green" id="nb-kb">0</span></div>
+    <div class="nav-item" data-page="memory" onclick="setPageNav('memory')">
+      <span class="nav-icon">💾</span>AI Memory
+      <span class="nav-badge" id="nb-mem">0</span></div>
+    <div class="nav-section">Boshqaruv</div>
+    <div class="nav-item" data-page="reports" onclick="setPageNav('reports')">
+      <span class="nav-icon">📋</span>Reports</div>
+    <div class="nav-item" data-page="settings" onclick="setPageNav('settings')">
+      <span class="nav-icon">⚙</span>Settings</div>
+    <div id="nav" style="display:none"></div>
+  </nav>
+  <div class="sidebar-foot">
+    <div class="foot-status"><span class="foot-dot"></span>
+      <span id="liveBadge">Aktiv scan yo'q</span></div>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main id="main">
+  <div class="topbar">
+    <div class="topbar-title" id="pageTitle">Dashboard</div>
+    <div class="topbar-actions">
+      <span id="active-scan-info" style="font-size:12px;color:var(--accent);font-family:var(--mono);display:none"></span>
+      <button class="btn btn-ghost btn-sm" onclick="location.reload()">↻ Yangilash</button>
+    </div>
+  </div>
+
+  <!-- ═══ DASHBOARD ═══ -->
+  <div class="page active" data-page="dashboard">
+    <div class="flex-between mb14">
+      <h2>⊞ Dashboard</h2>
+      <button class="btn btn-primary" onclick="setPageNav('new-scan')">▶ Yangi Scan</button>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="stat-num" style="color:var(--accent)" id="dashKb">—</div><div class="stat-lbl">KB Lessons</div></div>
+      <div class="stat"><div class="stat-num" style="color:var(--purple)" id="dashMemory">—</div><div class="stat-lbl">AI Memory</div></div>
+      <div class="stat"><div class="stat-num" style="color:var(--teal)" id="dashWordlists">—</div><div class="stat-lbl">Wordlists</div></div>
+      <div class="stat"><div class="stat-num" style="color:var(--green)" id="dashReports">—</div><div class="stat-lbl">Reports</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px">
+      <div>
+        <div class="card">
+          <div class="card-title">Kali Tools Holati <button class="btn btn-ghost btn-xs" onclick="refreshDash()">↻</button></div>
+          <div class="tool-grid" id="toolGrid"><div class="text-muted">Yuklanmoqda...</div></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Tools Status</div>
+          <div id="settingsTools"></div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">Tezkor Start</div>
+          <div class="form-group">
+            <label class="form-label">Target URL</label>
+            <input class="form-input" id="quickTarget" placeholder="http://target.lab">
+          </div>
+          <button class="btn btn-primary btn-full" onclick="quickStart()">▶ Tez Start</button>
+          <div class="mt8"><button class="btn btn-ghost btn-full btn-sm mt4" onclick="setPageNav('new-scan')">⚙ Sozlamalar bilan</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="flex gap8 mt8">
+      <button class="btn btn-ghost btn-sm" id="dashStartBtn" onclick="setPageNav('new-scan')">Yangi Scan →</button>
+      <button class="btn btn-ghost btn-sm" id="dashToolsBtn" onclick="setPageNav('settings')">Tools →</button>
+    </div>
+  </div>
+
+  <!-- ═══ YANGI SCAN ═══ -->
+  <div class="page" data-page="new-scan">
+    <h2>▶ Yangi Scan</h2>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px">
+      <div>
+        <div class="card">
+          <div class="card-title">Asosiy Sozlamalar</div>
+          <div class="form-group">
+            <label class="form-label">Target URL <span style="color:var(--red)">*</span></label>
+            <input class="form-input" id="scanTarget" placeholder="http://target.lab yoki 10.10.10.1:8080">
+            <div class="form-hint">IP, hostname, yoki to'liq URL</div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Auth URL</label>
+              <input class="form-input" id="scanAuthUrl" placeholder="/login">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Scan Mode</label>
+              <select class="form-select" id="scanMode">
+                <option value="full">full — to'liq scan</option>
+                <option value="web">web — oddiy web</option>
+                <option value="api">api — API ga yo'naltirilgan</option>
+                <option value="spa">spa — React/Vue/Angular</option>
+                <option value="quick">quick — tez scan</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="scanUser" placeholder="user@example.com"></div>
+            <div class="form-group"><label class="form-label">Password</label><input class="form-input" id="scanPassword" type="password" placeholder="••••••••"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Admin User (BAC)</label><input class="form-input" id="scanAdminUser" placeholder="admin"></div>
+            <div class="form-group"><label class="form-label">Admin Password</label><input class="form-input" id="scanAdminPass" type="password" placeholder="••••••••"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label class="form-label">Ollama Model</label><input class="form-input" id="scanModel" placeholder="llama3.1:8b"></div>
+            <div class="form-group"><label class="form-label">Test Environment</label><input class="form-input" id="scanEnv" value="Dev"></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">Scan Parametrlari</div>
+          <div class="options-grid">
+            <label class="form-check"><input type="checkbox" id="f-deep"><label>--deep</label></label>
+            <label class="form-check"><input type="checkbox" id="f-oob"><label>--oob (blind)</label></label>
+            <label class="form-check"><input type="checkbox" id="f-ctf"><label>--ctf rejim</label></label>
+            <label class="form-check"><input type="checkbox" id="f-no-nuclei"><label>--no-nuclei</label></label>
+            <label class="form-check"><input type="checkbox" id="f-no-403"><label>--no-403</label></label>
+            <label class="form-check"><input type="checkbox" id="f-no-upload"><label>--no-upload</label></label>
+          </div>
+          <div class="divider"></div>
+          <div class="form-hint">
+            <b style="color:var(--text)">--deep</b> — chuqur scan (sekinroq)<br>
+            <b style="color:var(--text)">--oob</b> — blind SSRF/CMDi (interactsh)<br>
+            <b style="color:var(--text)">--ctf</b> — CTF/lab muhiti uchun<br>
+            <b style="color:var(--text)">--no-nuclei</b> — Nuclei o'chiriladi<br>
+            <b style="color:var(--text)">--no-403</b> — 403 bypass o'chiriladi<br>
+            <b style="color:var(--text)">--no-upload</b> — upload attack o'chiriladi
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Pipeline</div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.8;font-family:var(--mono)">
+            0 → RECON (nmap/whatweb)<br>
+            0.5 → LeakBase Scan<br>
+            1 → Fingerprint / SmartProfile<br>
+            2 → Session / Login<br>
+            3 → Crawl (BFS + JS + API)<br>
+            4 → Param Discovery<br>
+            5 → AI Planner<br>
+            6 → Agentic OWASP Fuzz<br>
+            7 → Nuclei CVE<br>
+            8 → Recursive 403 Bypass<br>
+            9 → File Upload Attack<br>
+            10 → JWT Attack<br>
+            11 → WebSocket<br>
+            12 → AI Repeater<br>
+            13 → OOB Blind<br>
+            14 → FP Filter<br>
+            15 → Correlate<br>
+            16 → Report
+          </div>
+        </div>
+        <button class="btn btn-primary btn-lg btn-full" id="startScanBtn">▶ Skanini Boshlash</button>
+        <div class="mt8"><button class="btn btn-ghost btn-sm" id="scanToolsStatusBtn">Tools status →</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ LIVE SCAN ═══ -->
+  <div class="page" data-page="live-scan">
+    <div class="flex-between mb14">
+      <div class="flex gap12">
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Scan ID</div>
+          <div id="liveScanId" class="text-mono text-accent" style="font-size:13px">—</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Target</div>
+          <div id="liveTarget" class="text-mono text-accent" style="font-size:14px">—</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Status</div>
+          <span id="liveStatus" class="status-badge status-queued">queued</span>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Bosqich</div>
+          <div id="liveStageText" class="text-mono" style="font-size:12px;color:var(--teal)">—</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Progress</div>
+          <div id="liveProgressText" class="text-mono" style="font-size:18px;font-weight:700;color:var(--accent)">0%</div>
+        </div>
+      </div>
+      <div class="flex gap8">
+        <span class="chip" id="liveStage">Waiting...</span>
+        <button class="btn btn-ghost btn-sm" id="clearLogBtn">🗑 Log</button>
+        <button class="btn btn-danger btn-sm" id="stopScanBtn" style="display:none">⏹ Stop</button>
+        <button class="btn btn-primary btn-sm hidden" id="openFindingsBtn">⚑ Findings →</button>
+      </div>
+    </div>
+    <div class="prog-wrap"><div class="prog-fill" id="progressFill" style="width:0%"></div></div>
+    <div style="background:#010409;border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-bottom:1px solid var(--border);background:var(--bg2)">
+        <div class="flex gap8">
+          <div style="display:flex;gap:5px">
+            <span style="width:10px;height:10px;border-radius:50%;background:#ff5f57;display:block"></span>
+            <span style="width:10px;height:10px;border-radius:50%;background:#ffbd2e;display:block"></span>
+            <span style="width:10px;height:10px;border-radius:50%;background:#28c840;display:block"></span>
+          </div>
+          <span style="font-size:.8rem;font-weight:700;color:var(--muted)">Live Log · CLI stdout</span>
+        </div>
+        <span class="chip" id="liveLineCount">0 qator</span>
+      </div>
+      <pre class="terminal h-lg" id="liveLog"></pre>
+    </div>
+  </div>
+
+  <!-- ═══ SCAN TARIXI ═══ -->
+  <div class="page" data-page="scanned">
+    <div class="flex-between mb14">
+      <h2>◫ Scan Tarixi</h2>
+      <div class="flex gap8">
+        <button class="btn btn-ghost btn-sm" id="exportAllScansBtn">↓ JSON</button>
+        <button class="btn btn-danger btn-sm" id="clearScansBtn">✕ Hammasini o'chirish</button>
+      </div>
+    </div>
+    <div class="empty hidden" id="scannedEmpty">
+      <div class="empty-icon">◫</div>
+      <div class="empty-text">Hali birorta scan yo'q.</div>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>Target</th><th>Sana</th><th>Status</th><th>Mode</th>
+          <th style="color:var(--critical)">CR</th><th style="color:var(--high)">HI</th>
+          <th style="color:var(--medium)">ME</th><th style="color:var(--low)">LO</th>
+          <th>Jami</th><th>Amal</th>
+        </tr></thead>
+        <tbody id="scannedRows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ FINDINGS ═══ -->
+  <div class="page" data-page="findings">
+    <div class="flex-between mb14">
+      <h2>⚑ Findings</h2>
+      <div class="flex gap8">
+        <button class="btn btn-ghost btn-sm" id="exportFindingsJsonBtn">↓ JSON</button>
+        <button class="btn btn-ghost btn-sm" id="exportFindingsCsvBtn">↓ CSV</button>
+        <button class="btn btn-ghost btn-sm" id="exportFindingsHtmlBtn">↓ HTML</button>
+      </div>
+    </div>
+    <div class="tabs" id="findingsTabs">
+      <button class="tab active" data-ftab="confirmed">Confirmed (<span id="confirmedCount">0</span>)</button>
+      <button class="tab" data-ftab="suppressed">Suppressed (<span id="suppressedCount">0</span>)</button>
+      <button class="tab" data-ftab="scanlog">Scan Log</button>
+      <button class="tab" data-ftab="aianalysis">AI Assessment</button>
+    </div>
+    <div id="ftab-confirmed">
+      <div class="g4" style="margin-bottom:12px">
+        <div class="form-group" style="margin:0"><label class="form-label">Risk</label>
+          <select class="form-select" id="fltRisk"><option value="">Hammasi</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option><option>Info</option></select></div>
+        <div class="form-group" style="margin:0"><label class="form-label">OWASP</label>
+          <select class="form-select" id="fltOwasp"><option value="">Hammasi</option><option>A01</option><option>A02</option><option>A03</option><option>A04</option><option>A05</option><option>A06</option><option>A07</option><option>A08</option><option>A09</option><option>A10</option></select></div>
+        <div class="form-group" style="margin:0"><label class="form-label">Confirmed</label>
+          <select class="form-select" id="fltConfirmed"><option value="">Hammasi</option><option value="yes">Confirmed</option><option value="no">Unconfirmed</option></select></div>
+        <div class="form-group" style="margin:0"><label class="form-label">Tool</label>
+          <select class="form-select" id="fltTool"><option value="">Hammasi</option></select></div>
+      </div>
+      <div class="g2" style="margin-bottom:14px">
+        <div class="card" style="margin:0"><div class="card-title">Risk</div><div class="risk-bars" id="riskChart"></div></div>
+        <div class="card" style="margin:0"><div class="card-title">OWASP</div><div class="owasp-chart" id="owaspChart"></div></div>
+      </div>
+      <div id="findingsList"></div>
+      <div class="empty hidden" id="findingsEmpty"><div class="empty-icon">⚑</div><div class="empty-text">Finding topilmadi</div></div>
+    </div>
+    <div id="ftab-suppressed" class="hidden">
+      <div id="suppressedList"></div>
+      <div class="empty hidden" id="suppressedEmpty"><div>Suppressed finding yo'q</div></div>
+    </div>
+    <div id="ftab-scanlog" class="hidden">
+      <div style="background:#010409;border:1px solid var(--border);border-radius:var(--r2);overflow:hidden">
+        <div style="padding:9px 12px;border-bottom:1px solid var(--border);font-size:.8rem;font-weight:700">Scan Log</div>
+        <pre class="terminal h-lg" id="scanLogBox"></pre>
+      </div>
+    </div>
+    <div id="ftab-aianalysis" class="hidden">
+      <div class="card"><div class="card-title">AI Security Assessment</div>
+        <div id="aiAnalysisBox" style="white-space:pre-wrap;line-height:1.8;font-size:13px;font-family:var(--mono)">Scan tugaganda AI xulosa chiqaradi...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ AI REPEATER ═══ -->
+  <div class="page" data-page="repeater">
+    <h2>⇄ AI Repeater</h2>
+    <div class="g2" style="margin-bottom:14px">
+      <div class="card" style="margin:0">
+        <div class="card-title">Endpoint Sozlash</div>
+        <div class="form-group"><label class="form-label">URL</label><input class="form-input" id="repUrl" placeholder="http://target.lab/api/users"></div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Method</label>
+            <select class="form-select" id="repMethod"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select></div>
+          <div class="form-group"><label class="form-label">Body Type</label>
+            <select class="form-select" id="repBodyType"><option value="form">form</option><option value="json">json</option></select></div>
+        </div>
+        <div class="form-group"><label class="form-label">Params (JSON)</label><textarea class="form-textarea" id="repParams" placeholder='{"username":"admin","id":"1"}'></textarea></div>
+        <div class="form-group"><label class="form-label">JWT Token</label><input class="form-input" id="repJwt" placeholder="eyJ..."></div>
+        <div class="form-group"><label class="form-label">Cookies (JSON)</label><input class="form-input" id="repCookies" placeholder='{"session":"abc123"}'></div>
+        <div class="flex gap8 mt8">
+          <button class="btn btn-primary" id="repRunBtn">▶ AI Mutations</button>
+          <button class="btn btn-warn" id="repFuzzBtn">⚡ OWASP Fuzz</button>
+        </div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="card-title">Natija <span class="chip" id="repStatus">Tayyor</span></div>
+        <div id="repFindingsList"></div>
+        <div class="empty hidden" id="repEmpty">Natija bu yerda chiqadi</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Endpoint Intelligence (scan dan)</div>
+      <div class="filter-bar" id="epTabs">
+        <button class="filter-btn active" data-eptab="all">Hammasi</button>
+        <button class="filter-btn" data-eptab="useful">Foydali</button>
+        <button class="filter-btn" data-eptab="high">Yuqori score</button>
+      </div>
+      <div class="tbl-wrap">
+        <table><thead><tr><th>URL</th><th>Category</th><th>Useful</th><th>Score</th><th>Reason</th><th></th></tr></thead>
+        <tbody id="epRows"></tbody></table>
+      </div>
+      <div class="empty hidden" id="epEmpty">Scan tanlanganda endpoint-lar shu yerda chiqadi.</div>
+    </div>
+  </div>
+
+  <!-- ═══ KNOWLEDGE BASE ═══ -->
+  <div class="page" data-page="kb">
+    <h2>🧠 Knowledge Base — AI Advisor</h2>
+    <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:16px">
+      <div>
+        <div class="card-title mb8">AI bilan suhbat</div>
+        <div class="chat-box">
+          <div class="chat-msgs" id="chatBox">
+            <div class="msg-row ai">
+              <div class="bubble">Salom! Men PentestAI v8.0 AI Advisoriman. 🔐<br><br>
+              Scan natijalarini muhokama qilib, menga o'rgatishingiz mumkin!</div>
+            </div>
+          </div>
+          <div class="chat-foot">
+            <input class="chat-input" id="chatInput" placeholder="Yozing... (Enter — yuborish)">
+            <button class="btn btn-primary btn-sm" id="sendChatBtn">→ Yuborish</button>
+          </div>
+        </div>
+        <div class="flex gap8 mt8">
+          <select class="form-select" id="chatTargetSel" style="font-size:12px">
+            <option value="">Target tanlang (ixtiyoriy)</option>
+          </select>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          Saqlangan Darslar
+          <div class="flex gap8">
+            <span id="kbCount" class="badge badge-ok">0</span>
+          </div>
+        </div>
+        <input class="form-input" id="kbFilter" placeholder="Filter..." style="font-size:12px;margin-bottom:10px">
+        <div id="kbLessons" style="max-height:500px;overflow-y:auto"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ AI MEMORY ═══ -->
+  <div class="page" data-page="memory">
+    <div class="flex-between mb14">
+      <h2>💾 AI Failure Memory</h2>
+      <button class="btn btn-danger btn-sm" id="clearMemoryBtn">🗑 Memory tozalash</button>
+    </div>
+    <div class="stat-grid mb14">
+      <div class="stat"><div class="stat-num" style="color:var(--red)" id="mem-fp-count">—</div><div class="stat-lbl">False Positives</div><div class="stat-sub">Xato topilgan narsalar</div></div>
+      <div class="stat"><div class="stat-num" style="color:var(--orange)" id="mem-wa-count">—</div><div class="stat-lbl">Wrong Actions</div><div class="stat-sub">Befoyda testlar</div></div>
+      <div class="stat"><div class="stat-num" style="color:var(--yellow)" id="mem-bad-count">—</div><div class="stat-lbl">Bad Payloads</div><div class="stat-sub">Ishlamagan payloadlar</div></div>
+    </div>
+    <div class="tabs" id="memoryTabs">
+      <button class="tab active" data-tab="false_positives">False Positives</button>
+      <button class="tab" data-tab="wrong_actions">Wrong Actions</button>
+      <button class="tab" data-tab="failed_payloads">Failed Payloads</button>
+    </div>
+    <div class="chip" id="memoryCount" style="margin-bottom:12px">0 ta yozuv</div>
+    <div class="tbl-wrap"><table><thead id="memoryHead"></thead><tbody id="memoryRows"></tbody></table></div>
+  </div>
+
+  <!-- ═══ REPORTS ═══ -->
+  <div class="page" data-page="reports">
+    <div class="flex-between mb14">
+      <h2>📋 Report Fayllar</h2>
+      <button class="btn btn-ghost btn-sm" id="refreshReportsBtn">↻ Yangilash</button>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Fayl nomi</th><th>Tur</th><th>Hajm</th><th>Vaqt</th><th></th></tr></thead>
+        <tbody id="reportsRows"></tbody>
+      </table>
+    </div>
+    <div class="empty hidden" id="reportsEmpty"><div class="empty-icon">📋</div><div class="empty-text">Report topilmadi</div></div>
+  </div>
+
+  <!-- ═══ SETTINGS ═══ -->
+  <div class="page" data-page="settings">
+    <h2>⚙ Settings</h2>
+    <div class="g2">
+      <div>
+        <div class="card">
+          <div class="card-title">Server Sozlamalari</div>
+          <div class="form-group"><label class="form-label">Ollama Host</label><input class="form-input" id="setHost" placeholder="http://localhost:11434"></div>
+          <div class="form-group"><label class="form-label">Ollama Model</label><input class="form-input" id="setModel" placeholder="llama3.1:8b"></div>
+          <div class="form-group"><label class="form-label">LeakBase yo'li</label><input class="form-input" id="setLeakBase"></div>
+          <button class="btn btn-primary" id="saveSettingsBtn">💾 Saqlash</button>
+        </div>
+        <div class="card" style="background:rgba(0,230,118,.04);border-color:rgba(0,230,118,.2)">
+          <div style="font-size:.8rem;line-height:1.8;color:var(--green)">
+            ✅ <strong>uzCERT Authorized Mode</strong><br>
+            WEB_SAFE_REPORTS = false · Barcha maydonlar ochiq<br>
+            payload · request_raw · response_raw · exploit_cmd<br>
+            AI Repeater: AUTH_REMOVE · IDOR · METHOD_SWITCH · PARAM_TAMPER · PATH_ESCALATE · HEADER_INJECT · PRIV_ESCALATE
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">Tools Status</div>
+          <div id="settingsToolsPage"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- TOAST -->
+<div id="toast" class="toast" style="display:none"></div>
+
+<script>
+(() => {
+  const SS_SCANS = "pentestai_scans_v2";
+  const SS_SETTINGS = "pentestai_settings";
+  const FINAL = new Set(["done","failed","stopped"]);
+  const PAGES = [
+    ["dashboard","Dashboard","Tools & umumiy holat"],
+    ["new-scan","Yangi Scan","CLI argumentlar bilan scan boshlash"],
+    ["live-scan","Live Scan","CLI stdout real-time oqimi"],
+    ["scanned","Scan Tarixi","O'tgan scanlar natijalari"],
+    ["findings","Findings","Confirmed, suppressed, AI assessment"],
+    ["repeater","AI Repeater","Mutation replay & OWASP fuzz — full authorized"],
+    ["kb","Knowledge Base","AI advisor & lessons"],
+    ["memory","AI Memory","FP, wrong actions, failed payloads"],
+    ["reports","Reports","Hisobot fayllar"],
+    ["settings","Sozlamalar","Ollama, tools, panel sozlamalari"],
+  ];
+
+  const state = {
+    page: "dashboard", settings: {}, historyScans: [],
+    activeScanId: "", activeScan: null, currentRecord: null,
+    liveStream: null, logOffset: 0, logPollTimer: null, finalizedIds: new Set(),
+    kbLessons: [], chatHistory: [], memory: {},
+    memTab: "false_positives", findingsTab: "confirmed", epTab: "all",
+    tools: null, reports: [],
+  };
+
+  document.addEventListener("DOMContentLoaded", init);
+  window.addEventListener("beforeunload", closeStream);
+
+  async function init() {
+    state.historyScans = loadStoredScans();
+    bindAll();
+    await hydrateSettings();
+    setPage("dashboard");
+    await Promise.all([refreshDash(), loadKb(), loadMemory(), resumeScans()]);
+    renderScanned();
+    renderFindings();
+    renderEp();
+  }
+
+  // ── Utils ──────────────────────────────────────────────────────────────────
+  const $ = id => document.getElementById(id);
+  const esc = v => String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const fmt = v => { if(!v) return '-'; const d=new Date(v); return isNaN(d)?String(v):d.toLocaleString(); };
+  const dl = (name, text, mime) => { const b=new Blob([text],{type:mime}),u=URL.createObjectURL(b),a=document.createElement('a'); a.href=u; a.download=name; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u); };
+  const dlJson = (name, obj) => dl(name, JSON.stringify(obj,null,2),'application/json');
+  const rjson = (k, d) => { try{ return JSON.parse(localStorage.getItem(k)||JSON.stringify(d)); }catch{ return d; } };
+  const wjson = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+  function stripAnsi(s) { return String(s||'').replace(/\x1b\[[0-9;]*m/g,''); }
+
+  function riskBadge(risk) {
+    const cls = {Critical:'badge-cr',High:'badge-hi',Medium:'badge-me',Low:'badge-lo',Info:'badge-in'}[risk]||'badge-in';
+    return `<span class="badge ${cls}">${esc(risk||'Info')}</span>`;
+  }
+  function statusBadge(st) {
+    const cls = {queued:'badge-queue',running:'badge-run',done:'badge-done',failed:'badge-fail',stopped:'badge-stop',stopping:'badge-stop'}[st]||'badge-in';
+    return `<span class="badge ${cls}">${esc(st)}</span>`;
+  }
+  function classifyLine(line) {
+    const u = String(line||'').toUpperCase();
+    if(u.includes('CRITICAL')||u.includes('RCE')||line.includes('🎯')) return 'log-red';
+    if(u.includes('[HIGH]')) return 'log-orange';
+    if(u.includes('[MEDIUM]')) return 'log-yellow';
+    if(u.includes('[LOW]')) return 'log-dim';
+    if(u.includes('SUCCESS')||line.includes('✓')||u.includes('COMPLETED')) return 'log-green';
+    if(u.includes('AI DECISION')||u.includes('🤖')) return 'log-cyan';
+    return '';
+  }
+  function setApiState(text,err) {
+    const c=$('apiState'); c.textContent=text;
+    c.style.color=err?'var(--red)':'';
+  }
+
+  // ── API ────────────────────────────────────────────────────────────────────
+  async function api(path, opts={}) {
+    const cfg = {...opts, headers:{...opts.headers}};
+    if(cfg.body && typeof cfg.body==='object' && !(cfg.body instanceof FormData)) {
+      cfg.headers['Content-Type']='application/json';
+      cfg.body=JSON.stringify(cfg.body);
+    }
+    let r;
+    try{ r=await fetch(path,cfg); }
+    catch(e){ setApiState('API yo\'q',true); throw e; }
+    const ct = r.headers.get('content-type')||'';
+    const data = ct.includes('json') ? await r.json() : await r.text();
+    if(!r.ok){ setApiState('API xato',true); throw new Error((data && data.error) || r.statusText); }
+    setApiState('API ready',false);
+    return data;
+  }
+
+  // ── Navigation ─────────────────────────────────────────────────────────────
+  // setPageNav called from onclick in sidebar items
+  window.setPageNav = function(page) { setPage(page); };
+  window.goto = window.setPageNav; // alias
+
+  function setPage(page) {
+    state.page = page;
+    const meta = PAGES.find(p=>p[0]===page)||PAGES[0];
+    $('pageTitle').textContent = meta[1];
+    document.querySelectorAll('.page').forEach(n=>n.classList.toggle('active',n.dataset.page===page));
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===page));
+    if(page==='dashboard') refreshDash();
+    if(page==='scanned')   renderScanned();
+    if(page==='findings')  renderFindings();
+    if(page==='repeater')  { renderEp(); populateRepFromRecord(); }
+    if(page==='kb')        loadKb();
+    if(page==='memory')    loadMemory();
+    if(page==='reports')   loadReports();
+    if(page==='settings')  { hydrateSettings(); refreshDash(); }
+  }
+
+  // ── Bind ───────────────────────────────────────────────────────────────────
+  function bindAll() {
+    // scan form
+    $('startScanBtn').addEventListener('click', startScan);
+    $('stopScanBtn').addEventListener('click', stopScan);
+    $('clearLogBtn').addEventListener('click',()=>{ $('liveLog').innerHTML=''; $('liveLineCount').textContent='0 qator'; });
+    $('openFindingsBtn').addEventListener('click',()=>{ if(state.currentRecord) setPage('findings'); });
+    // scanned
+    $('clearScansBtn').addEventListener('click',()=>{ state.historyScans=[]; wjson(SS_SCANS,state.historyScans); renderScanned(); renderFindings(); });
+    $('exportAllScansBtn').addEventListener('click',()=>dlJson('pentestai_scans.json',state.historyScans));
+    $('scannedRows').addEventListener('click',handleScannedClick);
+    // findings tabs
+    $('findingsTabs').addEventListener('click',e=>{ const b=e.target.closest('[data-ftab]'); if(!b)return; state.findingsTab=b.dataset.ftab; [...$('findingsTabs').querySelectorAll('.tab')].forEach(x=>x.classList.toggle('active',x===b)); renderFindingsTabs(); });
+    $('findingsList').addEventListener('click',e=>{ const h=e.target.closest('.find-head'); if(h){ const card=h.closest('.find-card'); if(card) card.classList.toggle('open'); } });
+    $('fltRisk').addEventListener('change',renderConfirmedList);
+    $('fltOwasp').addEventListener('change',renderConfirmedList);
+    $('fltConfirmed').addEventListener('change',renderConfirmedList);
+    $('fltTool').addEventListener('change',renderConfirmedList);
+    $('exportFindingsJsonBtn').addEventListener('click',()=>{ if(state.currentRecord) dlJson(`findings_${Date.now()}.json`,state.currentRecord); });
+    $('exportFindingsCsvBtn').addEventListener('click',exportCsv);
+    $('exportFindingsHtmlBtn').addEventListener('click',openHtmlReport);
+    // repeater
+    $('epTabs').addEventListener('click',e=>{ const b=e.target.closest('[data-eptab]'); if(!b)return; state.epTab=b.dataset.eptab; [...$('epTabs').querySelectorAll('.filter-btn')].forEach(x=>x.classList.toggle('active',x===b)); renderEp(); });
+    $('repRunBtn').addEventListener('click',()=>runRepeater('mutations'));
+    $('repFuzzBtn').addEventListener('click',()=>runRepeater('fuzz'));
+    // kb
+    $('sendChatBtn').addEventListener('click',sendChat);
+    $('chatInput').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat();} });
+    $('kbFilter').addEventListener('input',renderKbLessons);
+    $('kbLessons').addEventListener('click',handleKbClick);
+    // memory
+    $('memoryTabs').addEventListener('click',e=>{ const b=e.target.closest('[data-tab]'); if(!b)return; state.memTab=b.dataset.tab; [...$('memoryTabs').querySelectorAll('.tab')].forEach(x=>x.classList.toggle('active',x===b)); renderMemory(); });
+    $('clearMemoryBtn').addEventListener('click',clearMemory);
+    // settings
+    $('saveSettingsBtn').addEventListener('click',saveSettings);
+    $('refreshReportsBtn').addEventListener('click',loadReports);
+  }
+
+  // ── Settings ───────────────────────────────────────────────────────────────
+  async function hydrateSettings() {
+    const saved = rjson(SS_SETTINGS,{});
+    let remote={};
+    try{ remote=await api('/api/settings'); }catch{}
+    state.settings={
+      ollama_host: saved.ollama_host||remote.ollama_host||'http://localhost:11434',
+      ollama_model: saved.ollama_model||remote.ollama_model||'llama3.1:8b',
+      leakbase_path: saved.leakbase_path||remote.leakbase_path||'',
+    };
+    $('setHost').value = state.settings.ollama_host;
+    $('setModel').value = state.settings.ollama_model;
+    $('setLeakBase').value = state.settings.leakbase_path;
+    $('scanModel').value = $('scanModel').value || state.settings.ollama_model;
+  }
+  function saveSettings() {
+    state.settings={...state.settings,
+      ollama_host:   $('setHost').value.trim()||'http://localhost:11434',
+      ollama_model:  $('setModel').value.trim()||'llama3.1:8b',
+      leakbase_path: $('setLeakBase').value.trim(),
+    };
+    wjson(SS_SETTINGS,state.settings);
+    $('scanModel').value=state.settings.ollama_model;
+    alert('Sozlamalar saqlandi ✓');
+  }
+
+  // ── Dashboard ──────────────────────────────────────────────────────────────
+  async function refreshDash() {
+    try {
+      const [tools,kb,mem] = await Promise.all([api('/api/tools'),api('/api/kb/lessons'),api('/api/memory')]);
+      state.tools=tools; state.kbLessons=kb.lessons||[]; state.memory=mem;
+      renderTools(tools);
+      renderSettingsTools();
+      $('dashKb').textContent=state.kbLessons.length;
+      $('dashMemory').textContent=memTotal(mem);
+      const wl=Object.values(tools.wordlists||{}).reduce((s,v)=>s+Number(v||0),0);
+      $('dashWordlists').textContent=wl;
+      $('nb-kb').textContent=state.kbLessons.length;
+      $('nb-mem').textContent=memTotal(mem);
+      renderKbLessons();
+      renderMemory();
+    }catch(e){ console.error(e); }
+    updateLiveBadge();
+    loadReportCount();
+  }
+  window.refreshDash = refreshDash;
+
+  async function loadReportCount(){
+    try{ const r=await api('/api/reports'); $('dashReports').textContent=(r.reports && r.reports.length) || 0; }catch{}
+  }
+  function renderTools(payload) {
+    const tools=payload.tools||{};
+    const html=Object.entries(tools).map(([name,item])=>
+      `<div class="tool-item"><div class="tool-dot ${item.available?'tool-ok':'tool-no'}"></div>${esc(name)}</div>`
+    ).join('');
+    $('toolGrid').innerHTML=html;
+  }
+  function renderSettingsTools() {
+    const tools=(state.tools&&state.tools.tools)||{};
+    const wl=(state.tools&&state.tools.wordlists)||{};
+    const html=Object.entries(tools).map(([n,t])=>`
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);align-items:center">
+        <div><strong style="font-size:.8rem">${esc(n)}</strong><div style="color:var(--muted);font-size:.7rem">${esc(t.purpose||'')}</div></div>
+        ${t.available?'<span class="badge badge-ok">ok</span>':'<span class="badge badge-fail">missing</span>'}
+      </div>`).join('')+
+    `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:.78rem;font-weight:700;margin-bottom:6px">Wordlists</div>`+
+    Object.entries(wl).map(([k,v])=>`
+      <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:.75rem;color:var(--muted)">
+        <span>${esc(k)}</span><strong style="color:${v>0?'var(--green)':'var(--muted)'}">${v}</strong>
+      </div>`).join('');
+    $('settingsTools').innerHTML=html;
+    const sp=$('settingsToolsPage'); if(sp) sp.innerHTML=html;
+  }
+  function memTotal(m){ return ['false_positives','wrong_actions','failed_payloads'].reduce((s,k)=>s+(m[k]||[]).length,0); }
+
+  // quick start from dashboard
+  window.quickStart = async function() {
+    const t=$('quickTarget').value.trim();
+    if(!t){ alert('Target URL kiriting!'); return; }
+    $('scanTarget').value=t;
+    await startScan();
+  };
+
+  // ── Scan Start ─────────────────────────────────────────────────────────────
+  function collectScanPayload() {
+    return {
+      target:    $('scanTarget').value.trim(),
+      mode:      $('scanMode').value||'full',
+      auth_url:  $('scanAuthUrl').value.trim(),
+      user:      $('scanUser').value.trim(),
+      password:  $('scanPassword').value,
+      admin_user:$('scanAdminUser').value.trim(),
+      admin_pass:$('scanAdminPass').value,
+      model:     $('scanModel').value.trim()||state.settings.ollama_model,
+      ollama_host: state.settings.ollama_host,
+      test_env:  $('scanEnv').value.trim()||'Dev',
+      deep:      $('f-deep').checked,
+      oob:       $('f-oob').checked,
+      ctf:       $('f-ctf').checked,
+      no_nuclei: $('f-no-nuclei').checked,
+      no_403:    $('f-no-403').checked,
+      no_upload: $('f-no-upload').checked,
+    };
+  }
+  async function startScan() {
+    const payload=collectScanPayload();
+    if(!payload.target){ alert('Target URL kerak!'); return; }
+    resetLiveLog();
+    state.currentRecord=null;
+    $('openFindingsBtn').classList.add('hidden');
+    try {
+      const data=await api('/api/scan/start',{method:'POST',body:payload});
+      state.activeScanId=data.id;
+      state.activeScan=data.scan||{id:data.id,target:payload.target,status:'queued',progress:0};
+      updateLiveScan(state.activeScan);
+      setPage('live-scan');
+      connectStream(data.id);
+    }catch(e){ alert(e.message||'Scan boshlashda xato'); }
+  }
+  async function stopScan() {
+    if(!state.activeScanId) return;
+    try{
+      await api(`/api/scan/${state.activeScanId}/stop`,{method:'POST'});
+      if(state.activeScan){ state.activeScan.status='stopping'; updateLiveScan(state.activeScan); }
+    }catch(e){ alert(e.message||'Stop xatosi'); }
+  }
+
+  // ── Live Log ───────────────────────────────────────────────────────────────
+  function resetLiveLog() {
+    closeStream(); state.logOffset=0;
+    $('liveLog').innerHTML=''; $('liveLineCount').textContent='0 qator';
+    $('liveScanId').textContent='-'; $('liveTarget').textContent='-';
+    $('liveProgressText').textContent='0%'; $('liveStageText').textContent='-';
+    $('liveStage').textContent='Waiting...'; $('progressFill').style.width='0%';
+    const s=$('liveStatus'); s.textContent='queued'; s.className='status-badge status-queued';
+  }
+  function connectStream(scanId) {
+    closeStream(); state.logOffset=0;
+    if(window.EventSource) {
+      const ev=new EventSource(`/api/scan/${scanId}/logs?stream=1`);
+      state.liveStream=ev;
+      ev.onmessage=e=>{ const p=JSON.parse(e.data); handleLogPayload(p); };
+      ev.onerror=()=>{ closeStream(); if(!state.activeScan||FINAL.has(state.activeScan.status))return; startPoll(scanId); };
+    } else { startPoll(scanId); }
+  }
+  function closeStream() {
+    if(state.liveStream){ state.liveStream.close(); state.liveStream=null; }
+    if(state.logPollTimer){ clearInterval(state.logPollTimer); state.logPollTimer=null; }
+  }
+  function startPoll(scanId) {
+    closeStream();
+    state.logPollTimer=setInterval(()=>pollLogs(scanId).catch(console.error),1500);
+    pollLogs(scanId).catch(console.error);
+  }
+  async function pollLogs(scanId) {
+    const p=await api(`/api/scan/${scanId}/logs?offset=${state.logOffset}`);
+    handleLogPayload(p);
+  }
+  function handleLogPayload(p) {
+    const lines=Array.isArray(p.lines)?p.lines:[];
+    if(lines.length) appendLines(lines);
+    state.logOffset=Number(p.offset||state.logOffset);
+    state.activeScan={...(state.activeScan||{}),id:state.activeScanId,
+      target:(state.activeScan&&state.activeScan.target)||$('liveTarget').textContent||'',
+      status:p.status||(state.activeScan&&state.activeScan.status)||'running',
+      progress:Number(p.progress||0),
+      active_stage:p.active_stage||(state.activeScan&&state.activeScan.active_stage)||''};
+    updateLiveScan(state.activeScan);
+    if(state.activeScan&&FINAL.has(state.activeScan.status)) finalizeScan(state.activeScan.id);
+  }
+  function appendLines(lines) {
+    const box=$('liveLog');
+    const stick=box.scrollTop+box.clientHeight>=box.scrollHeight-60;
+    const frag=document.createDocumentFragment();
+    lines.forEach(line=>{
+      const t=stripAnsi(String(line||''));
+      const s=document.createElement('span');
+      s.className=classifyLine(t);
+      s.textContent=t+'\n';
+      frag.appendChild(s);
+    });
+    box.appendChild(frag);
+    while(box.childNodes.length>6000) box.removeChild(box.firstChild);
+    $('liveLineCount').textContent=`${box.childNodes.length} qator`;
+    if(stick) box.scrollTop=box.scrollHeight;
+  }
+  function updateLiveScan(scan) {
+    if(!scan) return;
+    $('liveScanId').textContent=scan.id||'-';
+    $('liveTarget').textContent=scan.target||'-';
+    const pct=Number(scan.progress||0);
+    $('liveProgressText').textContent=`${pct}%`;
+    $('progressFill').style.width=`${pct}%`;
+    $('liveStageText').textContent=scan.active_stage||'-';
+    $('liveStage').textContent=scan.active_stage||'Running...';
+    const st=String(scan.status||'queued');
+    const badge=$('liveStatus');
+    badge.textContent=st; badge.className=`status-badge status-${st}`;
+    $('stopScanBtn').style.display=FINAL.has(st)?'none':'';
+    $('openFindingsBtn').classList.toggle('hidden',!FINAL.has(st));
+    updateLiveBadge();
+  }
+  function updateLiveBadge() {
+    const chip=$('liveBadge');
+    const nb=$('nb-live');
+    if(!state.activeScan||FINAL.has(state.activeScan.status)){
+      chip.textContent=state.activeScan?`${state.activeScan.status}: ${(state.activeScan.target||state.activeScan.id||'').slice(0,30)}`:'Aktiv scan yo\'q';
+      if(nb) nb.style.display='none';
+    } else {
+      chip.textContent=`⬤ ${(state.activeScan.target||state.activeScan.id||'').slice(0,30)}`;
+      if(nb) nb.style.display='';
+    }
+  }
+  async function finalizeScan(scanId, attempt=0) {
+    if(!scanId||state.finalizedIds.has(scanId)) return;
+    try {
+      const record=await loadFindingsFromServer(scanId);
+      if(record){ state.finalizedIds.add(scanId); upsertScan(record); renderScanned(); renderFindings(); renderEp(); refreshDash(); }
+    }catch(e){
+      if(attempt<4){ setTimeout(()=>finalizeScan(scanId,attempt+1),1400); return; }
+      console.error(e);
+    }finally{ if(state.activeScan&&FINAL.has(state.activeScan.status)) closeStream(); }
+  }
+  async function loadFindingsFromServer(scanId) {
+    const p=await api(`/api/scan/${scanId}/findings`);
+    const record=normalizeRecord({
+      id:p.id||scanId,
+      target:p.target||(state.activeScan&&state.activeScan.target)||'',
+      date:(state.activeScan&&(state.activeScan.finished_at||state.activeScan.created_at))||new Date().toISOString(),
+      status:p.status||(state.activeScan&&state.activeScan.status)||'done',
+      mode:(state.activeScan&&state.activeScan.mode)||'full',
+      findings:p.findings||[], suppressed:p.suppressed||[], scan_log:p.scan_log||[],
+      endpoint_analysis:p.endpoint_analysis||[], ai_analysis:p.ai_analysis||'',
+      summary:p.summary||{}, reports:p.reports||[],
+    });
+    state.currentRecord=record;
+    return record;
+  }
+  function normalizeRecord(item) {
+    const f=Array.isArray(item.findings)?item.findings:[];
+    const byRisk=(item.summary&&item.summary.by_risk)||{};
+    return {
+      id:item.id, target:item.target||'', date:item.date||new Date().toISOString(),
+      status:item.status||'done', mode:item.mode||'full',
+      critical:Number(byRisk.Critical||0), high:Number(byRisk.High||0),
+      medium:Number(byRisk.Medium||0), low:Number(byRisk.Low||0),
+      total:Number((item.summary&&item.summary.total)||f.length||0),
+      findings:f, suppressed:Array.isArray(item.suppressed)?item.suppressed:[],
+      scan_log:Array.isArray(item.scan_log)?item.scan_log:[],
+      endpoint_analysis:Array.isArray(item.endpoint_analysis)?item.endpoint_analysis:[],
+      ai_analysis:item.ai_analysis||'', summary:item.summary||{},
+      reports:Array.isArray(item.reports)?item.reports:[],
+    };
+  }
+  function upsertScan(record) {
+    const idx=state.historyScans.findIndex(s=>s.id===record.id);
+    if(idx>=0) state.historyScans.splice(idx,1,record); else state.historyScans.unshift(record);
+    state.historyScans.sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')));
+    wjson(SS_SCANS,state.historyScans.map(s=>({...s,findings:(s.findings || []).slice(0,500),endpoint_analysis:(s.endpoint_analysis || []).slice(0,200)})));
+  }
+
+  // ── Scanned ────────────────────────────────────────────────────────────────
+  function renderScanned() {
+    const rows=$('scannedRows'); const empty=$('scannedEmpty');
+    $('nb-scanned').textContent=state.historyScans.length;
+    if(!state.historyScans.length){ rows.innerHTML=''; empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+    rows.innerHTML=state.historyScans.map(s=>`
+      <tr data-id="${s.id}" style="cursor:pointer">
+        <td title="${esc(s.target)}" style="font-family:var(--mono);font-size:11px;color:var(--accent)">${esc((s.target||'').slice(0,45))}</td>
+        <td style="font-size:11px;color:var(--muted)">${fmt(s.date)}</td>
+        <td>${statusBadge(s.status)}</td>
+        <td><span class="badge badge-in" style="font-size:.68rem">${esc(s.mode||'full')}</span></td>
+        <td style="color:var(--critical);font-family:var(--mono);font-weight:700">${s.critical}</td>
+        <td style="color:var(--high);font-family:var(--mono)">${s.high}</td>
+        <td style="color:var(--medium);font-family:var(--mono)">${s.medium}</td>
+        <td style="color:var(--low);font-family:var(--mono)">${s.low}</td>
+        <td style="font-family:var(--mono);font-weight:700">${s.total}</td>
+        <td>
+          <button class="btn btn-xs btn-accent" data-action="view" data-id="${s.id}">View</button>
+          <button class="btn btn-xs" data-action="export" data-id="${s.id}">↓</button>
+          <button class="btn btn-xs btn-danger" data-action="delete" data-id="${s.id}">✕</button>
+        </td>
+      </tr>`).join('');
+  }
+  function handleScannedClick(e) {
+    const btn=e.target.closest('[data-action]'); const row=e.target.closest('tr[data-id]');
+    if(btn){ e.stopPropagation(); const id=btn.dataset.id; const s=state.historyScans.find(x=>x.id===id);
+      if(btn.dataset.action==='delete'){ state.historyScans=state.historyScans.filter(x=>x.id!==id); wjson(SS_SCANS,state.historyScans); if(state.currentRecord && state.currentRecord.id===id)state.currentRecord=null; renderScanned(); renderFindings(); return; }
+      if(btn.dataset.action==='export'&&s){ dlJson(`scan_${Date.now()}.json`,s); return; }
+      if(btn.dataset.action==='view'&&s){ state.currentRecord=s; renderFindings(); renderEp(); setPage('findings'); return; }
+    }
+    if(row){ const s=state.historyScans.find(x=>x.id===row.dataset.id); if(s){ state.currentRecord=s; renderFindings(); renderEp(); setPage('findings'); } }
+  }
+
+  // ── Findings ───────────────────────────────────────────────────────────────
+  function renderFindings() {
+    const rec=state.currentRecord;
+    const tsel=$('fltTool'); const curTool=tsel.value; const tools=new Set();
+    ((rec && rec.findings) || []).forEach(f=>{ if(f.tool)tools.add(f.tool); });
+    tsel.innerHTML='<option value="">Hammasi</option>'+[...tools].map(t=>`<option ${t===curTool?'selected':''}>${esc(t)}</option>`).join('');
+    $('confirmedCount').textContent=((rec && rec.findings) || []).length;
+    $('suppressedCount').textContent=((rec && rec.suppressed) || []).length;
+    $('nb-findings').textContent=((rec && rec.findings) || []).length;
+    renderFindingsTabs();
+  }
+  function renderFindingsTabs() {
+    document.querySelectorAll('[id^="ftab-"]').forEach(el=>el.classList.add('hidden'));
+    const activeTab = $(`ftab-${state.findingsTab}`);
+    if(activeTab) activeTab.classList.remove('hidden');
+    if(state.findingsTab==='confirmed') renderConfirmedList();
+    if(state.findingsTab==='suppressed') renderSuppressedList();
+    if(state.findingsTab==='scanlog') renderScanLog();
+    if(state.findingsTab==='aianalysis') renderAiAnalysis();
+  }
+  function getFilteredFindings() {
+    const rec=state.currentRecord; if(!rec) return [];
+    const risk=$('fltRisk').value, owasp=$('fltOwasp').value, conf=$('fltConfirmed').value, tool=$('fltTool').value;
+    return (rec.findings||[]).filter(f=>{
+      if(risk&&f.risk!==risk) return false;
+      if(owasp&&!String(f.owasp_id||'').startsWith(owasp)) return false;
+      if(conf==='yes'&&!f.confirmed) return false;
+      if(conf==='no'&&!!f.confirmed) return false;
+      if(tool&&f.tool!==tool) return false;
+      return true;
+    });
+  }
+  function renderConfirmedList() {
+    const list=$('findingsList'), empty=$('findingsEmpty');
+    const filtered=getFilteredFindings();
+    // Build charts
+    buildRiskChart((state.currentRecord && state.currentRecord.findings) || []);
+    buildOwaspChart((state.currentRecord && state.currentRecord.findings) || []);
+    if(!filtered.length){ list.innerHTML=''; empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+    const RISK_COLORS={Critical:'var(--critical)',High:'var(--high)',Medium:'var(--medium)',Low:'var(--low)',Info:'var(--info)'};
+    list.innerHTML=filtered.map((f,i)=>`
+      <div class="find-card" data-fi="${i}">
+        <div class="find-head" style="border-left:3px solid ${RISK_COLORS[f.risk]||'var(--info)'}">
+          <div>${riskBadge(f.risk)}</div>
+          <div style="font-size:.72rem;font-weight:700;color:var(--muted);min-width:36px">${esc(f.owasp_id||'-')}</div>
+          <div class="find-title">
+            ${esc(f.title||'Untitled')}
+            <div style="color:var(--muted);font-size:.7rem;margin-top:2px">${esc((f.url||'').slice(0,70))}</div>
+          </div>
+          <div style="font-size:.74rem;color:var(--muted)">${Number(f.confidence||0)}%</div>
+          <div style="font-size:.7rem">
+            ${f.confirmed?'<span class="badge badge-conf">✓</span>':'<span class="badge badge-unconf">?</span>'}
+            ${f.oob?'<span class="badge badge-oob">OOB</span>':''}
+          </div>
+          <div style="font-size:.7rem;color:var(--dim)">${esc(f.tool||'-')}</div>
+          <div style="font-size:11px;color:var(--dim)">▼</div>
+        </div>
+        <div class="find-body">
+          <div class="g2" style="margin-bottom:12px">
+            <div class="card" style="margin:0;padding:12px">
+              <div style="font-size:.78rem;font-weight:700;margin-bottom:8px;color:var(--accent)">Request</div>
+              ${kv('URL',f.url)}${kv('Method',f.method)}${kv('Param',f.param)}
+              ${kv('Payload',f.payload,true)}${kv('request_raw',f.request_raw,true)}
+            </div>
+            <div class="card" style="margin:0;padding:12px">
+              <div style="font-size:.78rem;font-weight:700;margin-bottom:8px;color:var(--accent)">Response & Analysis</div>
+              ${kv('response_raw',f.response_raw,true)}${kv('baseline_diff',f.baseline_diff)}
+              ${kv('OWASP',`${f.owasp_id} — ${f.owasp_name}`)}${kv('Tool',f.tool)}${kv('Timestamp',f.timestamp)}
+            </div>
+          </div>
+          ${f.evidence?`<div class="card" style="margin:0 0 10px;padding:12px"><div style="font-size:.76rem;font-weight:700;color:var(--accent);margin-bottom:6px">Evidence</div><pre class="code-block">${esc(f.evidence)}</pre></div>`:''}
+          <div class="g2" style="margin-bottom:10px">
+            ${f.exploit_cmd?`<div class="card" style="margin:0;padding:12px"><div style="font-size:.76rem;font-weight:700;color:var(--orange);margin-bottom:6px">⚡ PoC</div><pre class="code-block">${esc(f.exploit_cmd)}</pre></div>`:''}
+            ${f.remediation?`<div class="card" style="margin:0;padding:12px"><div style="font-size:.76rem;font-weight:700;color:var(--green);margin-bottom:6px">🔧 Remediation</div><pre class="code-block">${esc(f.remediation)}</pre></div>`:''}
+          </div>
+          ${f.tool_output?`<div class="card" style="margin:0;padding:12px"><div style="font-size:.76rem;font-weight:700;color:var(--muted);margin-bottom:6px">tool_output</div><pre class="code-block">${esc(f.tool_output)}</pre></div>`:''}
+          ${f.chain&&f.chain.length?`<div style="font-size:.76rem;color:var(--purple);margin-top:8px;font-family:var(--mono)">🔗 ${f.chain.map(esc).join(' → ')}</div>`:''}
+        </div>
+      </div>`).join('');
+  }
+  function kv(label, val, code=false) {
+    if(!val&&val!==0&&val!==false) return '';
+    const v=String(val);
+    return `<div class="kv-row"><div class="kv-label">${esc(label)}</div>${code?`<pre class="code-block" style="max-height:160px">${esc(v)}</pre>`:`<div class="kv-val">${esc(v)}</div>`}</div>`;
+  }
+  function buildRiskChart(findings) {
+    const rc={Critical:0,High:0,Medium:0,Low:0,Info:0};
+    findings.forEach(f=>{ if(rc[f.risk]!==undefined)rc[f.risk]++; });
+    const RISK_COLORS={Critical:'var(--critical)',High:'var(--high)',Medium:'var(--medium)',Low:'var(--low)',Info:'var(--info)'};
+    const max=Math.max(...Object.values(rc),1);
+    const RISK_CLASS={Critical:'badge-cr',High:'badge-hi',Medium:'badge-me',Low:'badge-lo',Info:'badge-in'};
+    const el=$('riskChart'); if(!el)return;
+    el.innerHTML=Object.entries(rc).filter(([,v])=>v>0).map(([r,v])=>`
+      <div class="risk-row">
+        <span class="risk-label"><span class="badge ${RISK_CLASS[r]}">${r.slice(0,4)}</span></span>
+        <div class="risk-bar-wrap"><div class="risk-bar" style="width:${v/max*100}%;background:${RISK_COLORS[r]}"></div></div>
+        <span class="risk-count">${v}</span>
+      </div>`).join('');
+  }
+  function buildOwaspChart(findings) {
+    const oc={};
+    findings.forEach(f=>{ oc[f.owasp_id]=(oc[f.owasp_id]||0)+1; });
+    const max=Math.max(...Object.values(oc),1);
+    const el=$('owaspChart'); if(!el)return;
+    el.innerHTML=Object.entries(oc).sort((a,b)=>b[1]-a[1]).map(([id,cnt])=>`
+      <div class="owasp-row">
+        <span class="owasp-id">${id}</span>
+        <div class="owasp-bar-wrap"><div class="owasp-bar" style="width:${cnt/max*100}%">${cnt>=3?cnt:''}</div></div>
+        <span class="owasp-count">${cnt}</span>
+      </div>`).join('');
+  }
+  function renderSuppressedList() {
+    const list=$('suppressedList'), empty=$('suppressedEmpty');
+    const sups=(state.currentRecord && state.currentRecord.suppressed) || [];
+    if(!sups.length){ list.innerHTML=''; empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+    list.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>Risk</th><th>Title</th><th>URL</th><th>Sabab</th></tr></thead><tbody>
+      ${sups.map(s=>`<tr><td>${riskBadge(s.risk)}</td><td style="font-size:.78rem">${esc(s.title||'')}</td><td style="font-size:.72rem;color:var(--muted)">${esc((s.url||'').slice(0,50))}</td><td style="font-size:.75rem;color:var(--muted)">${esc(s.reason||s.suppression_reason||'')}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  }
+  function renderScanLog() {
+    const logs=(state.currentRecord && state.currentRecord.scan_log) || [];
+    $('scanLogBox').innerHTML='';
+    if(!logs.length){ $('scanLogBox').textContent='Scan log mavjud emas.'; return; }
+    const frag=document.createDocumentFragment();
+    logs.forEach(line=>{ const s=document.createElement('span'); s.className=classifyLine(line); s.textContent=stripAnsi(line)+'\n'; frag.appendChild(s); });
+    $('scanLogBox').appendChild(frag);
+  }
+  function renderAiAnalysis() {
+    const txt=(state.currentRecord && state.currentRecord.ai_analysis) || '';
+    $('aiAnalysisBox').textContent=txt||'AI assessment mavjud emas.';
+  }
+
+  // ── Export ─────────────────────────────────────────────────────────────────
+  function exportCsv() {
+    const filtered=getFilteredFindings(); if(!filtered.length) return;
+    const cols=['risk','owasp_id','owasp_name','title','url','method','param','payload','confidence','confirmed','tool','evidence','exploit_cmd','remediation'];
+    const header=cols.join(',');
+    const rows=filtered.map(f=>cols.map(c=>{ const v=String(f[c] == null ? '' : f[c]).replace(/"/g,'""'); return `"${v}"`; }).join(','));
+    dl(`findings_${Date.now()}.csv`,[header,...rows].join('\r\n'),'text/csv');
+  }
+  function openHtmlReport() {
+    const rec=state.currentRecord; if(!rec) return;
+    const name=(rec.reports||[]).find(n=>String(n).endsWith('.html'));
+    if(name){ window.open(`/reports/${encodeURIComponent(name)}`,'_blank'); return; }
+    dl(`report_${Date.now()}.html`,buildHtml(rec),'text/html');
+  }
+  function buildHtml(rec) {
+    const findings=(rec.findings||[]).sort((a,b)=>({Critical:0,High:1,Medium:2,Low:3,Info:4}[a.risk]||9)-({Critical:0,High:1,Medium:2,Low:3,Info:4}[b.risk]||9));
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Pentest Report</title>
+<style>body{font-family:system-ui;background:#060810;color:#bdc8e2;padding:24px}h1{color:#00d4ff}
+.card{border:1px solid #1e2d45;border-radius:10px;padding:14px;margin-bottom:12px;background:#0b0f1a}
+pre{background:#010409;padding:10px;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:11px}
+.Critical{color:#ff4060}.High{color:#ff8c42}.Medium{color:#ffd740}.Low{color:#40c4ff}</style></head>
+<body><h1>Pentest AI — uzCERT Report</h1>
+<p>Target: ${esc(rec.target)} | Date: ${fmt(rec.date)} | Status: ${esc(rec.status)}</p>
+<p>Critical: ${rec.critical} | High: ${rec.high} | Medium: ${rec.medium} | Low: ${rec.low} | Total: ${rec.total}</p>
+${findings.map(f=>`<div class="card"><h3 class="${f.risk||''}">[${esc(f.risk)}] ${esc(f.owasp_id)} — ${esc(f.title)}</h3>
+<p>URL: ${esc(f.url)} | Method: ${esc(f.method)} | Param: ${esc(f.param)} | Tool: ${esc(f.tool)} | Confidence: ${f.confidence}%</p>
+<p><b>Evidence:</b></p><pre>${esc(f.evidence||'')}</pre>
+<p><b>Payload:</b></p><pre>${esc(f.payload||'')}</pre>
+<p><b>Request:</b></p><pre>${esc(f.request_raw||'')}</pre>
+<p><b>Response:</b></p><pre>${esc((f.response_raw||'').slice(0,600))}</pre>
+<p><b>PoC:</b></p><pre>${esc(f.exploit_cmd||'')}</pre>
+<p><b>Remediation:</b> ${esc(f.remediation||'')}</p></div>`).join('')}
+${rec.ai_analysis?`<div class="card"><h3>AI Assessment</h3><pre>${esc(rec.ai_analysis)}</pre></div>`:''}
+</body></html>`;
+  }
+
+  // ── AI Repeater ────────────────────────────────────────────────────────────
+  function populateRepFromRecord() {
+    const rec=state.currentRecord; if(!rec) return;
+    const f=(rec.findings||[])[0]; if(!f) return;
+    if(!$('repUrl').value&&f.url) $('repUrl').value=f.url;
+    if(!$('repMethod').value&&f.method) $('repMethod').value=f.method;
+  }
+  async function runRepeater(mode) {
+    const url=$('repUrl').value.trim(); if(!url){ alert('URL kerak!'); return; }
+    let params={};
+    try{ if($('repParams').value.trim()) params=JSON.parse($('repParams').value.trim()); }catch{ alert('Params JSON bo\'lishi kerak'); return; }
+    let cookies={};
+    try{ if($('repCookies').value.trim()) cookies=JSON.parse($('repCookies').value.trim()); }catch{}
+    const ep={ url, method:$('repMethod').value, params, body_type:$('repBodyType').value, score:50 };
+    const payload={ endpoint:ep, cookies, jwt_token:$('repJwt').value.trim(), tech:(state.currentRecord && state.currentRecord.tech) || {} };
+    const ep_path = mode==='fuzz' ? '/api/repeater/fuzz' : '/api/repeater/run';
+    const rs=$('repStatus'); rs.textContent='Running...'; rs.className='chip pulse';
+    $('repEmpty').classList.add('hidden'); $('repFindingsList').innerHTML='';
+    try {
+      const data=await api(ep_path,{method:'POST',body:payload});
+      rs.textContent=`${data.total||0} finding`; rs.className='chip';
+      const findings=data.findings||[];
+      if(!findings.length){ $('repEmpty').classList.remove('hidden'); $('repEmpty').textContent='Finding topilmadi.'; return; }
+      $('repFindingsList').innerHTML=findings.map(f=>`
+        <div class="find-card open" style="margin-bottom:8px">
+          <div class="find-head" style="cursor:default;border-left:3px solid var(--${f.risk==='Critical'?'critical':f.risk==='High'?'high':f.risk==='Medium'?'medium':'low'})">
+            <div>${riskBadge(f.risk)}</div>
+            <div style="font-size:.72rem;font-weight:700;color:var(--muted)">${esc(f.owasp_id||'-')}</div>
+            <div class="find-title">${esc(f.title||'')}</div>
+            <div style="font-size:.72rem">${f.confidence||0}%</div>
+            <div>${f.confirmed?'<span class="badge badge-conf">✓</span>':''}</div>
+            <div style="font-size:.7rem;color:var(--dim)">${esc(f.tool||'-')}</div>
+          </div>
+          <div class="find-body" style="display:block">
+            ${kv('Evidence',f.evidence,true)}${kv('Payload',f.payload,true)}
+            ${kv('request_raw',f.request_raw,true)}${kv('response_raw',f.response_raw,true)}
+            ${kv('exploit_cmd',f.exploit_cmd,true)}${kv('Remediation',f.remediation)}
+          </div>
+        </div>`).join('');
+    }catch(e){ rs.textContent='Xato'; rs.className='chip'; $('repEmpty').classList.remove('hidden'); $('repEmpty').textContent=`Xato: ${e.message}`; }
+  }
+  function renderEp() {
+    const rec=state.currentRecord;
+    const eps=(rec && rec.endpoint_analysis) || [];
+    const rows=$('epRows'), empty=$('epEmpty');
+    let filtered=eps;
+    if(state.epTab==='useful') filtered=eps.filter(e=>e.useful);
+    if(state.epTab==='high')   filtered=eps.filter(e=>Number(e.score||0)>=50);
+    if(!filtered.length){ rows.innerHTML=''; empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+    rows.innerHTML=filtered.map((e,i)=>`
+      <tr>
+        <td style="font-family:var(--mono);font-size:.72rem;color:var(--accent);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((e.url||'').slice(0,60))}</td>
+        <td><span class="badge badge-in" style="font-size:.68rem">${esc(e.category||'')}</span></td>
+        <td>${e.useful?'<span class="badge badge-ok">✓</span>':'<span class="badge badge-in">—</span>'}</td>
+        <td style="font-family:var(--mono);font-weight:700">${Number(e.score||0).toFixed(0)}</td>
+        <td style="font-size:.7rem;color:var(--muted)">${esc((e.reason||'').slice(0,80))}</td>
+        <td><button class="btn btn-xs btn-accent" data-ep-fill="${i}">Load</button></td>
+      </tr>`).join('');
+    rows.querySelectorAll('[data-ep-fill]').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const ep=filtered[Number(btn.dataset.epFill)];
+        if(ep){ $('repUrl').value=ep.url||''; setPage('repeater'); }
+      });
+    });
+  }
+
+  // ── KB Chat ────────────────────────────────────────────────────────────────
+  async function loadKb() {
+    try{
+      const data=await api('/api/kb/lessons');
+      state.kbLessons=data.lessons||[];
+      renderKbLessons();
+      $('kbCount').textContent=state.kbLessons.length;
+      $('nb-kb').textContent=state.kbLessons.length;
+      const targets=[...new Set(state.historyScans.map(s=>s.target).filter(Boolean))];
+      $('chatTargetSel').innerHTML='<option value="">Target tanlang (ixtiyoriy)</option>'+targets.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
+    }catch(e){ console.error(e); }
+  }
+  async function sendChat() {
+    const input=$('chatInput'); const msg=input.value.trim(); if(!msg) return;
+    const target=$('chatTargetSel').value||((state.currentRecord && state.currentRecord.target) || '')||'';
+    const scanId=((state.currentRecord && state.currentRecord.id) || state.activeScanId || '');
+    state.chatHistory.push({role:'user',content:msg});
+    input.value=''; renderChat();
+    try{
+      const data=await api('/api/kb/chat',{method:'POST',body:{message:msg,target,scan_id:scanId,history:state.chatHistory.slice(-10)}});
+      state.chatHistory.push({role:'ai',content:data.reply||'',learned:!!data.learned});
+      renderChat(); await loadKb();
+    }catch(e){ state.chatHistory.push({role:'ai',content:`Xato: ${e.message}`,learned:false}); renderChat(); }
+  }
+  function renderChat() {
+    const box=$('chatBox');
+    if(!state.chatHistory.length){ box.innerHTML='<div class="msg msg-ai">Salom! Scan natijalari haqida savollaringiz bo\'lsa yozing.</div>'; return; }
+    box.innerHTML=state.chatHistory.map(m=>`
+      <div class="msg ${m.role==='user'?'msg-user':'msg-ai'}">
+        ${m.learned?'<div class="badge badge-ok" style="margin-bottom:6px;display:inline-block">💾 Lesson saqlandi</div><br>':''}
+        ${esc(m.content||'')}
+      </div>`).join('');
+    box.scrollTop=box.scrollHeight;
+  }
+  function renderKbLessons() {
+    const filter=$('kbFilter').value.trim().toLowerCase();
+    const lessons=state.kbLessons.filter(l=>!filter||String(l.target||'').toLowerCase().includes(filter)||String(l.rule||'').toLowerCase().includes(filter));
+    $('kbLessons').innerHTML=lessons.length?lessons.map(l=>`
+      <div class="lesson-item">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+          <div style="flex:1">
+            <span class="badge badge-ok" style="font-size:.68rem">${esc(l.type||'custom')}</span>
+            <div class="lesson-rule">${esc(l.rule||'')}</div>
+            ${l.user_feedback?`<div style="font-size:.72rem;color:var(--muted);margin-top:4px">${esc((l.user_feedback||'').slice(0,80))}</div>`:''}
+            <div style="font-size:.7rem;color:var(--dim);margin-top:4px">${esc(l.target||'global')} | applied: ${l.applied_count||0}</div>
+          </div>
+          <button class="btn btn-xs btn-danger" data-lesson-del="${l.id}">✕</button>
+        </div>
+      </div>`).join(''):'<div style="padding:12px;color:var(--muted);font-size:.82rem">Lesson topilmadi</div>';
+    $('kbCount').textContent=state.kbLessons.length;
+  }
+  async function handleKbClick(e) {
+    const btn=e.target.closest('[data-lesson-del]'); if(!btn) return;
+    try{ await api(`/api/kb/lessons/${btn.dataset.lessonDel}`,{method:'DELETE'}); await loadKb(); }
+    catch(e){ alert(e.message||'Delete xatosi'); }
+  }
+
+  // ── Memory ─────────────────────────────────────────────────────────────────
+  async function loadMemory() {
+    try{ state.memory=await api('/api/memory'); renderMemory();
+      $('dashMemory').textContent=memTotal(state.memory);
+      $('nb-mem').textContent=memTotal(state.memory);
+      if($('mem-fp-count'))$('mem-fp-count').textContent=(state.memory.false_positives||[]).length;
+      if($('mem-wa-count'))$('mem-wa-count').textContent=(state.memory.wrong_actions||[]).length;
+      if($('mem-bad-count'))$('mem-bad-count').textContent=(state.memory.failed_payloads||[]).length;
+    }catch(e){ console.error(e); }
+  }
+  function renderMemory() {
+    const rows=Array.isArray(state.memory[state.memTab])?state.memory[state.memTab]:[];
+    const head=$('memoryHead'), body=$('memoryRows');
+    $('memoryCount').textContent=`${rows.length} ta yozuv`;
+    if(!rows.length){ head.innerHTML=''; body.innerHTML='<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--muted)">Yozuv yo\'q</td></tr>'; return; }
+    const cols=[...rows.reduce((s,item)=>{ Object.keys(item||{}).forEach(k=>s.add(k)); return s; },new Set())].slice(0,9);
+    head.innerHTML=`<tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr>`;
+    body.innerHTML=rows.map(item=>`<tr>${cols.map(c=>`<td style="font-size:.73rem;font-family:var(--mono)">${esc(strCell(item[c]))}</td>`).join('')}</tr>`).join('');
+  }
+  function strCell(v){ if(v==null) return ''; if(typeof v==='object') return JSON.stringify(v).slice(0,80); return String(v).slice(0,120); }
+  async function clearMemory() {
+    if(!confirm('AI Memory ni tozalash?')) return;
+    try{ await api('/api/memory',{method:'DELETE'}); await loadMemory(); refreshDash(); }
+    catch(e){ alert(e.message||'Xato'); }
+  }
+
+  // ── Reports ────────────────────────────────────────────────────────────────
+  async function loadReports() {
+    try{
+      const data=await api('/api/reports');
+      state.reports=data.reports||[];
+      renderReports();
+      $('dashReports').textContent=state.reports.length;
+    }catch(e){ console.error(e); }
+  }
+  function renderReports() {
+    const rows=$('reportsRows'), empty=$('reportsEmpty');
+    if(!state.reports.length){ rows.innerHTML=''; empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+    rows.innerHTML=state.reports.map(r=>`
+      <tr>
+        <td style="font-family:var(--mono);font-size:.78rem">${esc(r.name)}</td>
+        <td><span class="badge badge-in">${esc(r.kind)}</span></td>
+        <td style="font-family:var(--mono);font-size:.75rem;color:var(--muted)">${fmtBytes(r.size)}</td>
+        <td style="font-size:.75rem;color:var(--muted)">${fmt(r.mtime)}</td>
+        <td>
+          <a href="${esc(r.url)}" target="_blank" class="btn btn-xs btn-accent" style="text-decoration:none">Open</a>
+          <a href="${esc(r.url)}" download class="btn btn-xs" style="text-decoration:none">↓</a>
+        </td>
+      </tr>`).join('');
+  }
+  function fmtBytes(b){ if(!b) return '0 B'; const k=['B','KB','MB','GB']; const i=Math.floor(Math.log(b)/Math.log(1024)); return `${(b/Math.pow(1024,i)).toFixed(1)} ${k[i]}`; }
+
+  // ── Resume scans ───────────────────────────────────────────────────────────
+  async function resumeScans() {
+    try{
+      const data=await api('/api/scans');
+      const scans=data.scans||[];
+      const active=scans.find(s=>!FINAL.has(s.status));
+      if(active){ state.activeScanId=active.id; state.activeScan=active; setPage('live-scan'); resetLiveLog(); updateLiveScan(active); connectStream(active.id); return; }
+      if(scans[0]){ state.activeScanId=scans[0].id; state.activeScan=scans[0]; updateLiveScan(scans[0]); }
+    }catch(e){ console.error(e); }
+  }
+  function loadStoredScans() {
+    const raw=rjson(SS_SCANS,[]);
+    return Array.isArray(raw)?raw.map(s=>typeof s==='object'?s:{}).filter(s=>s.id):[];
+  }
+
+})();
+</script>
+</body>
+</html>
