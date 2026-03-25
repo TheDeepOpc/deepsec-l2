@@ -116,6 +116,9 @@ MAX_WORKERS      = 6
 MIN_CONFIDENCE   = 45
 BASELINE_REPEATS = 3
 AGENTIC_MAX_ITER = 20      # max iterations in agentic loop per endpoint
+AI_CALL_TIMEOUT_SEC = max(5, int(os.environ.get("AI_CALL_TIMEOUT_SEC", "25")))
+PAGE_ANALYSIS_AI_TIMEOUT_SEC = max(3, int(os.environ.get("PAGE_ANALYSIS_AI_TIMEOUT_SEC", "8")))
+PAGE_ANALYSIS_PROGRESS_EVERY = max(1, int(os.environ.get("PAGE_ANALYSIS_PROGRESS_EVERY", "1")))
 DEFAULT_UA       = "Mozilla/5.0 (X11; Linux x86_64) PentestAI/8.0"
 WEB_SAFE_REPORTS = str(os.environ.get("WEB_SAFE_REPORTS", "")).lower() in {"1", "true", "yes", "on"}
 WEB_SAFE_PLACEHOLDER = "[hidden in web-safe report]"
@@ -1201,12 +1204,11 @@ Return as plain text (no JSON)."""
             return (f"LeakBase-da '{domain}' uchun hech qanday ma'lumot topilmadi. "
                     f"Odatiy black-box pentest davom ettiriladi.")
         try:
-            client = self.ai._get_client()
-            resp   = client.chat(
-                model=MODEL_NAME,
-                messages=[{"role":"user","content":prompt}],
+            raw = self.ai._chat_text(
+                [{"role":"user","content":prompt}],
+                timeout_sec=AI_CALL_TIMEOUT_SEC,
             )
-            return resp["message"]["content"].strip()[:300]
+            return str(raw).strip()[:300]
         except Exception:
             return (f"LeakBase-da '{domain}' uchun hech qanday credential topilmadi. "
                     f"Odatiy pentest davom ettiriladi.")
@@ -1247,12 +1249,11 @@ Return as plain text (no JSON)."""
             return (f"LeakBase-dan {total_found} ta credential topildi lekin "
                     f"hech biri hozir ishlamaydi. Oddiy pentest davom etadi.")
         try:
-            client = self.ai._get_client()
-            resp   = client.chat(
-                model=MODEL_NAME,
-                messages=[{"role":"user","content":prompt}],
+            raw = self.ai._chat_text(
+                [{"role":"user","content":prompt}],
+                timeout_sec=AI_CALL_TIMEOUT_SEC,
             )
-            return resp["message"]["content"].strip()[:400]
+            return str(raw).strip()[:400]
         except Exception:
             if successful:
                 return (f"LeakBase-dan '{domain}' uchun {total_found} ta credential topildi. "
@@ -1740,6 +1741,42 @@ class AIEngine:
     def _clean(text: str, max_chars: int = 2000) -> str:
         return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text[:max_chars])
 
+    def _chat_text(self, messages: List[dict], timeout_sec: Optional[float] = None) -> str:
+        """
+        Send chat request to Ollama with a hard timeout.
+        Uses HTTP API when requests is available to prevent indefinite hangs.
+        """
+        timeout_val = float(timeout_sec if timeout_sec is not None else AI_CALL_TIMEOUT_SEC)
+        timeout_val = max(3.0, timeout_val)
+        model = resolve_model_name(MODEL_NAME)
+
+        if HAS_REQUESTS:
+            url = urllib.parse.urljoin(OLLAMA_HOST.rstrip("/") + "/", "api/chat")
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+            }
+            # connect timeout short, read timeout bounded
+            resp = requests.post(url, json=payload, timeout=(4, timeout_val))
+            resp.raise_for_status()
+            data = resp.json() if resp.content else {}
+            msg = (data.get("message") or {}).get("content")
+            if isinstance(msg, str) and msg.strip():
+                return msg
+            alt = data.get("response")
+            if isinstance(alt, str) and alt.strip():
+                return alt
+            raise ValueError("Ollama returned empty chat content")
+
+        # Fallback path if requests is unavailable
+        client = self._get_client()
+        resp = client.chat(model=model, messages=messages)
+        msg = resp.get("message", {}).get("content")
+        if not isinstance(msg, str):
+            raise ValueError("Invalid Ollama response format")
+        return msg
+
     @staticmethod
     def _extract_json_payload(text: str, expect_list: bool = False) -> Optional[Any]:
         """
@@ -1780,7 +1817,8 @@ class AIEngine:
         return r
 
     def _call(self, prompt: str, cache: bool = True,
-              expect_list: bool = False) -> Optional[Any]:
+              expect_list: bool = False, timeout_sec: Optional[float] = None,
+              retries: int = 3) -> Optional[Any]:
         if not HAS_OLLAMA:
             return None
         key = hashlib.md5(prompt.encode()).hexdigest()
@@ -1794,17 +1832,16 @@ class AIEngine:
             self._last_call = time.time()
 
         last_err = None
-        for attempt in range(3):
+        retries = max(1, int(retries))
+        for attempt in range(retries):
             try:
-                client = self._get_client()
-                resp   = client.chat(
-                    model=MODEL_NAME,
+                raw = self._chat_text(
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user",   "content": prompt},
                     ],
+                    timeout_sec=timeout_sec,
                 )
-                raw = resp["message"]["content"]
                 parsed = self._extract_json_payload(raw, expect_list=expect_list)
                 if parsed is not None:
                     if expect_list:
@@ -1823,11 +1860,12 @@ class AIEngine:
             except Exception as e:
                 last_err = e
                 self._error_count += 1
-                if "500" in str(e) and attempt < 2:
+                emsg = str(e).lower()
+                if ("500" in emsg or "timeout" in emsg or "timed out" in emsg) and attempt < (retries - 1):
                     self._client = None
                     time.sleep(4 * (attempt + 1))
                     continue
-                if attempt < 2:
+                if attempt < (retries - 1):
                     time.sleep(1.2 * (attempt + 1))
                     continue
                 break
@@ -2210,7 +2248,12 @@ Return JSON: {{
   "risk": "Critical|High|Medium|Low|Info",
   "recommended_tests": ["sqli","xss","lfi","idor","ssrf","cmdi","ssti"]
 }}"""
-        return self._call(prompt, cache=False) or {
+        return self._call(
+            prompt,
+            cache=False,
+            timeout_sec=PAGE_ANALYSIS_AI_TIMEOUT_SEC,
+            retries=1,
+        ) or {
             "is_real_page": is_200.get("real", False),
             "page_type": "unknown",
             "sensitive_data": [s["key"] for s in sens],
@@ -2463,15 +2506,14 @@ Format:
 Return as plain text (no JSON)."""
         if not HAS_OLLAMA: return "AI assessment unavailable."
         try:
-            client = self._get_client()
-            resp   = client.chat(
-                model=MODEL_NAME,
-                messages=[
+            raw = self._chat_text(
+                [
                     {"role": "system", "content": "You are a senior penetration tester writing professional reports."},
                     {"role": "user",   "content": prompt},
                 ],
+                timeout_sec=AI_CALL_TIMEOUT_SEC,
             )
-            return resp["message"]["content"].strip()
+            return str(raw).strip()
         except Exception as e:
             return f"AI assessment error: {e}"
 
@@ -8576,16 +8618,14 @@ Return JSON:
             return ("AI mavjud emas. Lekin sizning fikringiz saqlandi.", None)
 
         try:
-            client = self.ai._get_client()
-            resp   = client.chat(
-                model=MODEL_NAME,
-                messages=[
+            raw = self.ai._chat_text(
+                [
                     {"role":"system","content":
                      "You are an expert penetration tester. Respond concisely and professionally."},
                     {"role":"user","content":prompt},
                 ],
+                timeout_sec=AI_CALL_TIMEOUT_SEC,
             )
-            raw    = resp["message"]["content"]
             clean  = re.sub(r"```json|```","",raw).strip()
             m      = re.search(r"\{.*\}", clean, re.DOTALL)
             if m:
@@ -8964,12 +9004,24 @@ class PentestPipeline:
         console.print(f"\n[cyan]━━ PAGE ANALYSIS ━━[/cyan]")
         page_cache   : dict = {}
         extra_endpoints: list = []
-        for ep in enriched:
+        total_pages = len(enriched)
+        for idx, ep in enumerate(enriched, start=1):
             r = page_cache.setdefault(ep.url, self.client.get(ep.url))
-            if r["status"] == 0: continue
+            if r["status"] == 0:
+                if idx % PAGE_ANALYSIS_PROGRESS_EVERY == 0 or idx == total_pages:
+                    console.print(f"  [dim]  analyzed {idx} of {total_pages}[/dim]")
+                continue
             is_200   = baseline.is_real_200(r)
-            analysis = self.ai.analyze_page(ep.url, r["status"], r["body"], r["headers"], is_200)
-            if analysis.get("is_custom_404"): ep.score = 0; continue
+            try:
+                analysis = self.ai.analyze_page(ep.url, r["status"], r["body"], r["headers"], is_200)
+            except Exception as e:
+                console.print(f"  [dim red]  Page analysis error on {ep.url}: {e}[/dim red]")
+                analysis = {}
+            if analysis.get("is_custom_404"):
+                ep.score = 0
+                if idx % PAGE_ANALYSIS_PROGRESS_EVERY == 0 or idx == total_pages:
+                    console.print(f"  [dim]  analyzed {idx} of {total_pages}[/dim]")
+                continue
             risk = analysis.get("risk","Info")
             ep.score += {"Critical":40,"High":25,"Medium":10}.get(risk,0)
             for child in analysis.get("suggested_child_paths",[]):
@@ -8977,6 +9029,8 @@ class PentestPipeline:
             # Add AI-recommended tests to params
             for test in analysis.get("recommended_tests",[]):
                 ep.params[f"ai_recommended:{test}"] = "1"
+            if idx % PAGE_ANALYSIS_PROGRESS_EVERY == 0 or idx == total_pages:
+                console.print(f"  [dim]  analyzed {idx} of {total_pages}[/dim]")
 
         for eu in list(set(extra_endpoints))[:20]:
             if eu in crawler.visited: continue

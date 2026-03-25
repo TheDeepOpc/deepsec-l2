@@ -739,12 +739,20 @@
     if(!el) return;
     const icon = el.querySelector(".nav-icon");
     if(!icon) return;
-    let textNode = null;
-    for(const node of el.childNodes) {
-      if(node.nodeType === Node.TEXT_NODE) { textNode = node; break; }
+    let labelNode = icon.nextSibling;
+    while(labelNode && labelNode.nodeType !== Node.TEXT_NODE) labelNode = labelNode.nextSibling;
+    if(!labelNode) {
+      labelNode = document.createTextNode("");
+      icon.parentNode.insertBefore(labelNode, icon.nextSibling);
     }
-    if(textNode) textNode.textContent = ` ${text}`;
-    else icon.insertAdjacentText("afterend", ` ${text}`);
+    labelNode.textContent = ` ${text}`;
+
+    // Remove extra duplicated text nodes in nav item
+    for(const node of [...el.childNodes]) {
+      if(node.nodeType !== Node.TEXT_NODE) continue;
+      if(node === labelNode) continue;
+      if(node.textContent && node.textContent.trim()) node.textContent = "";
+    }
   }
   function applyLanguage() {
     if(!SUPPORTED_LANGS.has(state.uiLang)) state.uiLang = "uz";
