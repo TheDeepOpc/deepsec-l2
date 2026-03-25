@@ -50,8 +50,6 @@
       <span class="nav-icon">⚠</span>Reports</div>
     <div class="nav-item" data-page="deepsec-s" onclick="setPageNav('deepsec-s')">
       <span class="nav-icon">🧩</span>DEEPSEC S</div>
-    <div class="nav-item" data-page="settings" onclick="setPageNav('settings')">
-      <span class="nav-icon">⚙</span>Settings</div>
       <!-- <div class="nav-item" data-page="settings" onclick="setPageNav('settings')">
         <span class="nav-icon">⚙</span>Settings</div> -->
     <div id="nav" style="display:none"></div>
@@ -483,21 +481,22 @@
 
   <div class="page" data-page="settings">
     <h2>⚙ Settings</h2>
-    <div>
+    <div class="g2">
       <div>
         <div class="card">
-          <div class="card-title" id="langCardTitle">Interface Language</div>
-          <div class="form-group">
-            <label class="form-label" id="langLabel" for="setUiLang">Language</label>
-            <select class="form-select" id="setUiLang">
-              <option value="uz">O'zbek</option>
-              <option value="en">English</option>
-              <option value="ru">Русский</option>
-            </select>
-          </div>
-          <button class="btn btn-primary" id="saveSettingsBtn">Save</button>
+          <div class="card-title">Server Sozlamalari</div>
+          <div class="form-group"><label class="form-label">Ollama Host</label><input class="form-input" id="setHost" placeholder="http://localhost:11434"></div>
+          <div class="form-group"><label class="form-label">Ollama Model</label><input class="form-input" id="setModel" placeholder="minmax-m2:cloud"></div>
+          <div class="form-group"><label class="form-label">LeakBase yo'li</label><input class="form-input" id="setLeakBase"></div>
+          <button class="btn btn-primary" id="saveSettingsBtn">Saqlash</button>
         </div>
        
+      </div>
+      <div>
+        <div class="card">
+          <div class="card-title">Tools Status</div>
+          <div id="settingsToolsPage"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -510,153 +509,8 @@
 (() => {
   const SS_SCANS = "pentestai_scans_v2";
   const SS_SETTINGS = "pentestai_settings";
-  const SS_UI_LANG = "pentestai_ui_lang";
   const REPORT_IMPORT_LIMIT = 300;
   const FINAL = new Set(["done","failed","stopped"]);
-  const SUPPORTED_LANGS = new Set(["uz","en","ru"]);
-  const I18N = {
-    uz: {
-      "nav.section.main":"Asosiy",
-      "nav.section.results":"Natijalar",
-      "nav.section.ai":"AI Tizim",
-      "nav.section.mgmt":"Boshqaruv",
-      "nav.dashboard":"Dashboard",
-      "nav.new-scan":"Yangi Scan",
-      "nav.live-scan":"Live Scan",
-      "nav.scanned":"Scan Tarixi",
-      "nav.findings":"Findings",
-      "nav.repeater":"AI Repeater",
-      "nav.kb":"Knowledge Base",
-      "nav.memory":"AI Memory",
-      "nav.reports":"Reports",
-      "nav.deepsec-s":"DEEPSEC S",
-      "nav.settings":"Settings",
-      "page.dashboard":"Dashboard",
-      "page.new-scan":"Yangi Scan",
-      "page.live-scan":"Live Scan",
-      "page.scanned":"Scan Tarixi",
-      "page.findings":"Findings",
-      "page.repeater":"AI Repeater",
-      "page.kb":"Knowledge Base",
-      "page.memory":"AI Memory",
-      "page.reports":"Reports",
-      "page.deepsec-s":"DEEPSEC S",
-      "page.settings":"Settings",
-      "top.refresh":"↻ Yangilash",
-      "settings.title":"⚙ Settings",
-      "settings.card":"Interfeys tili",
-      "settings.label":"Til",
-      "settings.save":"Saqlash",
-      "msg.saved":"Sozlamalar saqlandi ✓",
-      "api.checking":"API tekshirilmoqda...",
-      "btn.new_scan":"▶ Yangi Scan",
-      "btn.tools":"Tools →",
-      "btn.start_scan":"▶ Skanini Boshlash",
-      "btn.tools_status":"Tools status →",
-      "btn.clear_log":"🗑 Log",
-      "btn.stop":"⏹ Stop",
-      "btn.findings":"⚑ Findings →",
-      "btn.clear_scans":"Tarixni tozalash",
-      "btn.export_scans":"Barchasini export",
-      "btn.export_json":"↓ JSON",
-      "btn.export_csv":"↓ CSV",
-      "btn.export_html":"↓ HTML"
-    },
-    en: {
-      "nav.section.main":"Main",
-      "nav.section.results":"Results",
-      "nav.section.ai":"AI System",
-      "nav.section.mgmt":"Management",
-      "nav.dashboard":"Dashboard",
-      "nav.new-scan":"New Scan",
-      "nav.live-scan":"Live Scan",
-      "nav.scanned":"Scan History",
-      "nav.findings":"Findings",
-      "nav.repeater":"AI Repeater",
-      "nav.kb":"Knowledge Base",
-      "nav.memory":"AI Memory",
-      "nav.reports":"Reports",
-      "nav.deepsec-s":"DEEPSEC S",
-      "nav.settings":"Settings",
-      "page.dashboard":"Dashboard",
-      "page.new-scan":"New Scan",
-      "page.live-scan":"Live Scan",
-      "page.scanned":"Scan History",
-      "page.findings":"Findings",
-      "page.repeater":"AI Repeater",
-      "page.kb":"Knowledge Base",
-      "page.memory":"AI Memory",
-      "page.reports":"Reports",
-      "page.deepsec-s":"DEEPSEC S",
-      "page.settings":"Settings",
-      "top.refresh":"↻ Refresh",
-      "settings.title":"⚙ Settings",
-      "settings.card":"Interface language",
-      "settings.label":"Language",
-      "settings.save":"Save",
-      "msg.saved":"Settings saved ✓",
-      "api.checking":"Checking API...",
-      "btn.new_scan":"▶ New Scan",
-      "btn.tools":"Tools →",
-      "btn.start_scan":"▶ Start Scan",
-      "btn.tools_status":"Tools status →",
-      "btn.clear_log":"🗑 Log",
-      "btn.stop":"⏹ Stop",
-      "btn.findings":"⚑ Findings →",
-      "btn.clear_scans":"Clear history",
-      "btn.export_scans":"Export all",
-      "btn.export_json":"↓ JSON",
-      "btn.export_csv":"↓ CSV",
-      "btn.export_html":"↓ HTML"
-    },
-    ru: {
-      "nav.section.main":"Основное",
-      "nav.section.results":"Результаты",
-      "nav.section.ai":"AI Система",
-      "nav.section.mgmt":"Управление",
-      "nav.dashboard":"Панель",
-      "nav.new-scan":"Новый скан",
-      "nav.live-scan":"Live Scan",
-      "nav.scanned":"История сканов",
-      "nav.findings":"Нахождения",
-      "nav.repeater":"AI Repeater",
-      "nav.kb":"База знаний",
-      "nav.memory":"AI Память",
-      "nav.reports":"Отчеты",
-      "nav.deepsec-s":"DEEPSEC S",
-      "nav.settings":"Настройки",
-      "page.dashboard":"Панель",
-      "page.new-scan":"Новый скан",
-      "page.live-scan":"Live Scan",
-      "page.scanned":"История сканов",
-      "page.findings":"Нахождения",
-      "page.repeater":"AI Repeater",
-      "page.kb":"База знаний",
-      "page.memory":"AI Память",
-      "page.reports":"Отчеты",
-      "page.deepsec-s":"DEEPSEC S",
-      "page.settings":"Настройки",
-      "top.refresh":"↻ Обновить",
-      "settings.title":"⚙ Настройки",
-      "settings.card":"Язык интерфейса",
-      "settings.label":"Язык",
-      "settings.save":"Сохранить",
-      "msg.saved":"Настройки сохранены ✓",
-      "api.checking":"Проверка API...",
-      "btn.new_scan":"▶ Новый скан",
-      "btn.tools":"Инструменты →",
-      "btn.start_scan":"▶ Запустить скан",
-      "btn.tools_status":"Статус инструментов →",
-      "btn.clear_log":"🗑 Лог",
-      "btn.stop":"⏹ Стоп",
-      "btn.findings":"⚑ Нахождения →",
-      "btn.clear_scans":"Очистить историю",
-      "btn.export_scans":"Экспорт всего",
-      "btn.export_json":"↓ JSON",
-      "btn.export_csv":"↓ CSV",
-      "btn.export_html":"↓ HTML"
-    }
-  };
   const PAGES = [
     ["dashboard","Dashboard","Tools & umumiy holat"],
     ["new-scan","Yangi Scan","CLI argumentlar bilan scan boshlash"],
@@ -677,7 +531,6 @@
     liveStream: null, logOffset: 0, logPollTimer: null, finalizedIds: new Set(),
     kbLessons: [], chatHistory: [], memory: {},
     deepsecHistory: [],
-    uiLang: "uz",
     memTab: "false_positives", findingsTab: "confirmed", epTab: "all",
     tools: null, reports: [],
   };
@@ -689,7 +542,6 @@
     state.historyScans = loadStoredScans().map(normalizeRecord);
     bindAll();
     await hydrateSettings();
-    applyLanguage();
     setPage("dashboard");
     await Promise.all([refreshDash(), loadKb(), loadMemory(), resumeScans(), hydrateHistoryFromReports()]);
     ensureCurrentRecord();
@@ -730,57 +582,6 @@
     const c=$('apiState'); c.textContent=text;
     c.style.color=err?'var(--red)':'';
   }
-  function tr(key) {
-    const lang = SUPPORTED_LANGS.has(state.uiLang) ? state.uiLang : "uz";
-    return (I18N[lang] && I18N[lang][key]) || I18N.uz[key] || key;
-  }
-  function setNavLabel(page, text) {
-    const el = document.querySelector(`.nav-item[data-page="${page}"]`);
-    if(!el) return;
-    const icon = el.querySelector(".nav-icon");
-    if(!icon) return;
-    let textNode = null;
-    for(const node of el.childNodes) {
-      if(node.nodeType === Node.TEXT_NODE) { textNode = node; break; }
-    }
-    if(textNode) textNode.textContent = ` ${text}`;
-    else icon.insertAdjacentText("afterend", ` ${text}`);
-  }
-  function applyLanguage() {
-    if(!SUPPORTED_LANGS.has(state.uiLang)) state.uiLang = "uz";
-    document.documentElement.lang = state.uiLang;
-
-    const sections = document.querySelectorAll(".nav-section");
-    if(sections[0]) sections[0].textContent = tr("nav.section.main");
-    if(sections[1]) sections[1].textContent = tr("nav.section.results");
-    if(sections[2]) sections[2].textContent = tr("nav.section.ai");
-    if(sections[3]) sections[3].textContent = tr("nav.section.mgmt");
-
-    PAGES.forEach(([page]) => setNavLabel(page, tr(`nav.${page}`)));
-
-    const currentPage = state.page || "dashboard";
-    $("pageTitle").textContent = tr(`page.${currentPage}`);
-
-    const topRefreshBtn = document.querySelector('.topbar-actions .btn.btn-ghost.btn-sm');
-    if(topRefreshBtn) topRefreshBtn.textContent = tr("top.refresh");
-    const settingsHeading = document.querySelector('.page[data-page="settings"] h2');
-    if(settingsHeading) settingsHeading.textContent = tr("settings.title");
-    if($("langCardTitle")) $("langCardTitle").textContent = tr("settings.card");
-    if($("langLabel")) $("langLabel").textContent = tr("settings.label");
-    if($("saveSettingsBtn")) $("saveSettingsBtn").textContent = tr("settings.save");
-    if($("dashStartBtn")) $("dashStartBtn").textContent = tr("btn.new_scan");
-    if($("dashToolsBtn")) $("dashToolsBtn").textContent = tr("btn.tools");
-    if($("startScanBtn")) $("startScanBtn").textContent = tr("btn.start_scan");
-    if($("scanToolsStatusBtn")) $("scanToolsStatusBtn").textContent = tr("btn.tools_status");
-    if($("clearLogBtn")) $("clearLogBtn").textContent = tr("btn.clear_log");
-    if($("stopScanBtn")) $("stopScanBtn").textContent = tr("btn.stop");
-    if($("openFindingsBtn")) $("openFindingsBtn").textContent = tr("btn.findings");
-    if($("clearScansBtn")) $("clearScansBtn").textContent = tr("btn.clear_scans");
-    if($("exportAllScansBtn")) $("exportAllScansBtn").textContent = tr("btn.export_scans");
-    if($("exportFindingsJsonBtn")) $("exportFindingsJsonBtn").textContent = tr("btn.export_json");
-    if($("exportFindingsCsvBtn")) $("exportFindingsCsvBtn").textContent = tr("btn.export_csv");
-    if($("exportFindingsHtmlBtn")) $("exportFindingsHtmlBtn").textContent = tr("btn.export_html");
-  }
 
   // ── API ────────────────────────────────────────────────────────────────────
   async function api(path, opts={}) {
@@ -791,10 +592,10 @@
     }
     let r;
     try{ r=await fetch(path,cfg); }
-    catch(e){ setApiState('API unavailable',true); throw e; }
+    catch(e){ setApiState('API yo\'q',true); throw e; }
     const ct = r.headers.get('content-type')||'';
     const data = ct.includes('json') ? await r.json() : await r.text();
-    if(!r.ok){ setApiState('API error',true); throw new Error((data && data.error) || r.statusText); }
+    if(!r.ok){ setApiState('API xato',true); throw new Error((data && data.error) || r.statusText); }
     setApiState('API ready',false);
     return data;
   }
@@ -806,7 +607,7 @@
   function setPage(page) {
     state.page = page;
     const meta = PAGES.find(p=>p[0]===page)||PAGES[0];
-    $('pageTitle').textContent = tr(`page.${meta[0]}`);
+    $('pageTitle').textContent = meta[1];
     document.querySelectorAll('.page').forEach(n=>n.classList.toggle('active',n.dataset.page===page));
     document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===page));
     if(page==='dashboard') refreshDash();
@@ -862,7 +663,6 @@
     $('clearMemoryBtn').addEventListener('click',clearMemory);
     // settings
     $('saveSettingsBtn').addEventListener('click',saveSettings);
-    if($('setUiLang')) $('setUiLang').addEventListener('change',()=>{ state.uiLang=$('setUiLang').value; applyLanguage(); });
     $('refreshReportsBtn').addEventListener('click',loadReports);
 
     // mobile menu toggle
@@ -907,22 +707,21 @@
       ollama_host: saved.ollama_host||remote.ollama_host||'http://localhost:11434',
       ollama_model: saved.ollama_model||remote.ollama_model||'llama3.1:8b',
       leakbase_path: saved.leakbase_path||remote.leakbase_path||'',
-      ui_lang: saved.ui_lang||localStorage.getItem(SS_UI_LANG)||'uz',
     };
-    state.uiLang = String(state.settings.ui_lang || "uz").toLowerCase();
-    if(!SUPPORTED_LANGS.has(state.uiLang)) state.uiLang = "uz";
-    if($('setUiLang')) $('setUiLang').value = state.uiLang;
+    $('setHost').value = state.settings.ollama_host;
+    $('setModel').value = state.settings.ollama_model;
+    $('setLeakBase').value = state.settings.leakbase_path;
     $('scanModel').value = $('scanModel').value || state.settings.ollama_model;
   }
   function saveSettings() {
-    state.uiLang = $('setUiLang') ? $('setUiLang').value : state.uiLang;
-    if(!SUPPORTED_LANGS.has(state.uiLang)) state.uiLang = "uz";
-    state.settings = {...state.settings, ui_lang: state.uiLang};
+    state.settings={...state.settings,
+      ollama_host:   $('setHost').value.trim()||'http://localhost:11434',
+      ollama_model:  $('setModel').value.trim()||'llama3.1:8b',
+      leakbase_path: $('setLeakBase').value.trim(),
+    };
     wjson(SS_SETTINGS,state.settings);
-    localStorage.setItem(SS_UI_LANG, state.uiLang);
-    applyLanguage();
-    $('scanModel').value = state.settings.ollama_model;
-    alert(tr("msg.saved"));
+    $('scanModel').value=state.settings.ollama_model;
+    alert('Sozlamalar saqlandi ✓');
   }
 
   // ── Dashboard ──────────────────────────────────────────────────────────────

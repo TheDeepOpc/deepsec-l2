@@ -29,6 +29,9 @@ REPORT_DIR = Path(getattr(pentest_core, "REPORT_DIR", APP_ROOT / "pentest_report
 MEMORY_FILE = getattr(pentest_core.FailureMemory, "MEMORY_FILE", REPORT_DIR / "failure_memory.json")
 KB_FILE = getattr(pentest_core.KnowledgeBase, "KB_FILE", REPORT_DIR / "knowledge.json")
 LEAKBASE_PATH = getattr(pentest_core.LeakBaseScanner, "LEAKBASE_PATH", APP_ROOT / "authbypass" / "Auth_Database.txt")
+FRONTEND_FILE = STATIC_DIR / "index.html"
+FRONTEND_DEFAULT_FILE = STATIC_DIR / "index.default.html"
+FRONTEND_EDITOR_FILE = REPORT_DIR / "frontend_editor_state.json"
 
 # uzCERT authorized pentest — WEB_SAFE_REPORTS is DISABLED
 # All fields including payload, request_raw, response_raw, exploit_cmd are exposed
@@ -360,6 +363,161 @@ def scan_reader(scan: ScanRuntime) -> None:
 def kb_instance() -> pentest_core.KnowledgeBase:
     ai = pentest_core.AIEngine()
     return pentest_core.KnowledgeBase(ai)
+
+
+def default_frontend_editor_state() -> Dict[str, Any]:
+    return {"history": [], "last_updated": "", "total_edits": 0}
+
+
+def ensure_frontend_default() -> None:
+    try:
+        STATIC_DIR.mkdir(exist_ok=True)
+        if not FRONTEND_DEFAULT_FILE.exists() and FRONTEND_FILE.exists():
+            FRONTEND_DEFAULT_FILE.write_text(FRONTEND_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def frontend_editor_state() -> Dict[str, Any]:
+    return read_json(FRONTEND_EDITOR_FILE, default_frontend_editor_state())
+
+
+def save_frontend_editor_event(event: Dict[str, Any]) -> None:
+    state = frontend_editor_state()
+    history = state.get("history", [])
+    history.append(event)
+    state["history"] = history[-300:]
+    state["last_updated"] = datetime.now().isoformat()
+    state["total_edits"] = len(state["history"])
+    write_json(FRONTEND_EDITOR_FILE, state)
+
+
+def _extract_json_payload(text: str) -> Optional[dict]:
+    clean = re.sub(r"```json|```", "", str(text or ""), flags=re.IGNORECASE).strip()
+    if not clean:
+        return None
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(clean):
+        if ch != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(clean[idx:])
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _collect_ids(html: str) -> set:
+    return set(re.findall(r'id=["\']([^"\']+)["\']', html or "", flags=re.IGNORECASE))
+
+
+def _validate_frontend_structure(updated_html: str) -> None:
+    low = (updated_html or "").lower()
+    if "<html" not in low or "</html>" not in low or "<body" not in low or "</body>" not in low:
+        raise ValueError("AI returned invalid HTML structure")
+
+    # Core JS markers to avoid returning static HTML that bricks the panel.
+    required_markers = [
+        "const pages =",
+        "function bindall()",
+        "function setpage(",
+        "function api(",
+        "document.addeventlistener(\"domcontentloaded\"",
+    ]
+    for marker in required_markers:
+        if marker not in low:
+            raise ValueError(f"AI edit rejected: missing marker '{marker}'")
+
+    required_ids = {
+        "apiState",
+        "pageTitle",
+        "startScanBtn",
+        "stopScanBtn",
+        "scannedRows",
+        "findingsTabs",
+        "findingsList",
+        "repRunBtn",
+        "repFuzzBtn",
+        "sendChatBtn",
+        "chatInput",
+        "kbLessons",
+        "memoryTabs",
+        "clearMemoryBtn",
+        "refreshReportsBtn",
+        "deepsecSendBtn",
+        "deepsecPrompt",
+        "deepsecResetBtn",
+        "deepsecReloadBtn",
+        "deepsecChatBox",
+        "deepsecStatus",
+    }
+    missing = sorted(required_ids - _collect_ids(updated_html))
+    if missing:
+        raise ValueError(f"AI edit rejected: missing required ids: {', '.join(missing[:12])}")
+
+
+def frontend_ai_edit(message: str, history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not FRONTEND_FILE.exists():
+        raise FileNotFoundError("index.html not found")
+    current_html = FRONTEND_FILE.read_text(encoding="utf-8")
+    if not getattr(pentest_core, "HAS_OLLAMA", False):
+        return {
+            "reply": "AI mavjud emas (Ollama topilmadi).",
+            "applied": False,
+            "updated_html": "",
+        }
+
+    ai = pentest_core.AIEngine()
+    client = ai._get_client()
+    prompt = f"""You are a frontend-only code editor for DeepSec web panel.
+
+STRICT RULES:
+1) Edit ONLY the HTML file content provided.
+2) Keep all existing JavaScript functionality working unless user explicitly asks to remove it.
+3) Do NOT add backend code or references to non-existing APIs.
+4) If user asks something dangerous or unrelated, refuse briefly and keep HTML unchanged.
+5) Return strict JSON only.
+
+USER REQUEST:
+{message}
+
+RECENT CHAT HISTORY:
+{json.dumps(history[-10:], ensure_ascii=False)}
+
+CURRENT index.html:
+<index_html>
+{current_html}
+</index_html>
+
+Return JSON:
+{{
+  "reply": "short assistant response in Uzbek",
+  "applied": true,
+  "updated_html": "<!DOCTYPE html>....full updated html...."
+}}"""
+    resp = client.chat(
+        model=getattr(pentest_core, "MODEL_NAME", "llama3.1:8b"),
+        messages=[
+            {"role": "system", "content": "You are a precise frontend engineer. Output strict JSON."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    raw = (resp or {}).get("message", {}).get("content", "")
+    data = _extract_json_payload(raw)
+    if not data:
+        raise ValueError("AI response JSON parse failed")
+    updated_html = str(data.get("updated_html") or "")
+    applied = bool(data.get("applied")) and bool(updated_html)
+    if applied:
+        _validate_frontend_structure(updated_html)
+        FRONTEND_FILE.write_text(updated_html, encoding="utf-8")
+    return {
+        "reply": str(data.get("reply") or ("Bajarildi." if applied else "O'zgarish kiritilmadi.")),
+        "applied": applied,
+        "updated_html": updated_html if applied else "",
+    }
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -742,6 +900,85 @@ def api_kb_rules() -> Response:
     return jsonify({"global_rules": data.get("global_rules", [])})
 
 
+@app.get("/api/frontend/editor/state")
+def api_frontend_editor_state() -> Response:
+    ensure_frontend_default()
+    state = frontend_editor_state()
+    return jsonify(
+        {
+            "history": state.get("history", []),
+            "last_updated": state.get("last_updated", ""),
+            "total_edits": int(state.get("total_edits", 0)),
+            "frontend_file": str(FRONTEND_FILE),
+            "default_file": str(FRONTEND_DEFAULT_FILE),
+            "default_exists": FRONTEND_DEFAULT_FILE.exists(),
+        }
+    )
+
+
+@app.post("/api/frontend/editor/chat")
+def api_frontend_editor_chat() -> Response:
+    ensure_frontend_default()
+    payload = request.get_json(silent=True) or {}
+    message = str(payload.get("message") or "").strip()
+    history = payload.get("history") if isinstance(payload.get("history"), list) else []
+    if not message:
+        return jsonify({"error": "message required"}), 400
+    try:
+        result = frontend_ai_edit(message, history)
+    except Exception as exc:
+        save_frontend_editor_event(
+            {
+                "ts": datetime.now().isoformat(),
+                "message": message[:500],
+                "reply": f"Xato: {exc}",
+                "applied": False,
+                "error": True,
+            }
+        )
+        return jsonify({"ok": False, "error": str(exc), "applied": False}), 500
+
+    save_frontend_editor_event(
+        {
+            "ts": datetime.now().isoformat(),
+            "message": message[:500],
+            "reply": result.get("reply", ""),
+            "applied": bool(result.get("applied")),
+            "error": False,
+        }
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "reply": result.get("reply", ""),
+            "applied": bool(result.get("applied")),
+            "reload_required": bool(result.get("applied")),
+        }
+    )
+
+
+@app.post("/api/frontend/editor/reset")
+def api_frontend_editor_reset() -> Response:
+    ensure_frontend_default()
+    if not FRONTEND_DEFAULT_FILE.exists():
+        return jsonify({"error": "default template not found"}), 404
+    try:
+        FRONTEND_FILE.write_text(FRONTEND_DEFAULT_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    save_frontend_editor_event(
+        {
+            "ts": datetime.now().isoformat(),
+            "message": "reset_to_default",
+            "reply": "Frontend default holatga qaytarildi.",
+            "applied": True,
+            "error": False,
+        }
+    )
+    return jsonify({"ok": True, "reply": "Default holatga qaytarildi.", "applied": True, "reload_required": True})
+
+
 # ── AI Memory ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/memory")
@@ -822,6 +1059,7 @@ def api_reports() -> Response:
 def main() -> int:
     STATIC_DIR.mkdir(exist_ok=True)
     REPORT_DIR.mkdir(exist_ok=True)
+    ensure_frontend_default()
     host = os.environ.get("WEB_PANEL_HOST", "127.0.0.1")
     port = int(os.environ.get("WEB_PANEL_PORT", "8088"))
     print(f"[uzCERT Pentest AI] Web Panel → http://{host}:{port}")

@@ -971,14 +971,11 @@ LEAKBASE_PATH = "/authbypass/Auth_Database.txt"
 
         # 4. Credential-larni parse qilish
         creds = []
-        for line in raw_lines[:500]:   # max 500 ta sinab ko'ramiz
+        for n, line in enumerate(raw_lines[:500], 1):   # max 500 ta sinab ko'ramiz
             parsed_cred = self._parse_line(line, domain)
             if parsed_cred:
                 creds.append(parsed_cred)
-                console.print(
-                    f"  [dim]    → {parsed_cred['username'][:30]}:"
-                    f"{'*' * min(len(parsed_cred['password']),8)}[/dim]"
-                )
+                console.print(f"  [cyan]    [{n:>3}] {parsed_cred['username']}:{parsed_cred['password']}[/cyan]")
 
         if not creds:
             msg = f"LeakBase-da {len(raw_lines)} ta qator topildi lekin credential parse qilinmadi"
@@ -1000,15 +997,12 @@ LEAKBASE_PATH = "/authbypass/Auth_Database.txt"
             username = cred["username"]
             password = cred["password"]
 
-            console.print(
-                f"  [dim]    ▶ {username[:30]}:{password[:20]}...[/dim]",
-                end=""
-            )
+            console.print(f"  [dim]    ▶ {username}:{password}[/dim]", end="")
 
             success, session_info = self._try_login(login_url, username, password)
 
             if success:
-                console.print(f"  [bold green] ✅ SUCCESS![/bold green]")
+                console.print(f"  [bold green] ✅ SUCCESS! {username}:{password}[/bold green]")
                 result["successful_logins"].append({
                     "username":     username,
                     "password":     password,
@@ -1025,7 +1019,7 @@ LEAKBASE_PATH = "/authbypass/Auth_Database.txt"
                 self.client.session.logged_in = True
                 self.client.session.username  = username
             else:
-                console.print(f"  [dim]  ✗ failed[/dim]")
+                console.print(f"  [dim red]  ✗ failed  {username}:{password}[/dim red]")
 
         # 7. AI tushuntirish
         ai_msg = self._ai_explain_result(
@@ -8621,6 +8615,92 @@ Return JSON:
                 f"     Feedback: {l.get('user_feedback','')[:60]}..."
             )
 
+    @staticmethod
+    def _target_key(value: str) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        if "://" not in raw:
+            raw = "http://" + raw
+        try:
+            p = urllib.parse.urlparse(raw)
+            host = (p.netloc or "").strip().lower()
+            path = (p.path or "").strip().rstrip("/").lower()
+            return f"{host}{path}"
+        except Exception:
+            return str(value or "").strip().rstrip("/").lower()
+
+    def _target_match(self, report_target: str, target: str) -> bool:
+        a = self._target_key(report_target)
+        b = self._target_key(target)
+        if not a or not b:
+            return False
+        return a == b or a.startswith(b) or b.startswith(a)
+
+    def _collect_target_report_snapshots(self, target: str, limit: int = 6) -> List[dict]:
+        if not target:
+            return []
+        snapshots: List[dict] = []
+        try:
+            files = sorted(
+                REPORT_DIR.glob("findings_*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except Exception:
+            return snapshots
+
+        for path in files:
+            if len(snapshots) >= limit:
+                break
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            report_target = str(payload.get("target") or "")
+            if not self._target_match(report_target, target):
+                continue
+            findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+            suppressed = payload.get("suppressed") if isinstance(payload.get("suppressed"), list) else []
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            by_risk = summary.get("by_risk") if isinstance(summary.get("by_risk"), dict) else {}
+            tools = sorted(
+                {
+                    str(f.get("tool", "")).strip()
+                    for f in findings if isinstance(f, dict) and str(f.get("tool", "")).strip()
+                }
+            )
+            top_findings = [
+                str(f.get("title") or "")[:120]
+                for f in findings[:8] if isinstance(f, dict) and str(f.get("title") or "")
+            ]
+            fp_titles = [
+                str(s.get("title") or s.get("reason") or "")[:120]
+                for s in suppressed[:6] if isinstance(s, dict)
+            ]
+            endpoint_analysis = payload.get("endpoint_analysis") if isinstance(payload.get("endpoint_analysis"), list) else []
+            top_eps = sorted(
+                [e for e in endpoint_analysis if isinstance(e, dict)],
+                key=lambda e: float(e.get("score") or 0),
+                reverse=True
+            )[:8]
+            snapshots.append({
+                "scan_date": str(payload.get("scan_date") or ""),
+                "summary_total": int(summary.get("total") or len(findings)),
+                "summary_suppressed": int(summary.get("suppressed") or len(suppressed)),
+                "by_risk": by_risk,
+                "tools": tools[:12],
+                "top_findings": top_findings,
+                "fp_titles": fp_titles,
+                "top_eps": [
+                    f"{str(e.get('url') or '')} (score={int(float(e.get('score') or 0))}, tool={str(e.get('category') or '-')})"
+                    for e in top_eps if str(e.get("url") or "")
+                ],
+            })
+        return snapshots
+
     # ── Scan Integration ──────────────────────────────────────────────────────
     def build_scan_context(self, target: str) -> str:
         """
@@ -8634,15 +8714,63 @@ Return JSON:
             or l.get("target") == target
             or not l.get("target")
         ]
-        if not relevant:
+        snapshots = self._collect_target_report_snapshots(target, limit=6)
+        if not relevant and not snapshots:
             return ""
 
-        lines = ["KNOWLEDGE BASE LESSONS (apply to this scan):"]
-        for l in relevant[-20:]:
-            lines.append(f"- [{l['type']}] {l.get('rule','')}")
-            if l.get("finding_title"):
-                lines.append(f"  (re: '{l['finding_title']}')")
-        return "\n".join(lines)
+        lines: List[str] = [f"TARGET MEMORY CONTEXT: {target}"]
+        if snapshots:
+            scans = len(snapshots)
+            total_findings = sum(int(s.get("summary_total", 0)) for s in snapshots)
+            total_suppressed = sum(int(s.get("summary_suppressed", 0)) for s in snapshots)
+            risk_rollup = collections.Counter()
+            tools_rollup = collections.Counter()
+            for s in snapshots:
+                for r, c in (s.get("by_risk") or {}).items():
+                    try:
+                        risk_rollup[r] += int(c)
+                    except Exception:
+                        pass
+                for t in s.get("tools") or []:
+                    tools_rollup[str(t)] += 1
+
+            lines.append(f"- Recent scans matched: {scans}")
+            lines.append(f"- Findings total: {total_findings} | Suppressed/FP: {total_suppressed}")
+            if risk_rollup:
+                lines.append(
+                    "- Risk rollup: " + ", ".join(f"{k}={risk_rollup[k]}" for k in ["Critical","High","Medium","Low","Info"] if risk_rollup.get(k))
+                )
+            if tools_rollup:
+                top_tools = [t for t, _ in tools_rollup.most_common(10)]
+                lines.append("- Tools used: " + ", ".join(top_tools))
+
+            key_findings: List[str] = []
+            key_fp: List[str] = []
+            key_eps: List[str] = []
+            for s in snapshots:
+                key_findings.extend(s.get("top_findings") or [])
+                key_fp.extend(s.get("fp_titles") or [])
+                key_eps.extend(s.get("top_eps") or [])
+            if key_findings:
+                lines.append("- Top vulnerabilities seen before:")
+                for item in key_findings[:12]:
+                    lines.append(f"  * {item}")
+            if key_fp:
+                lines.append("- Known false-positive/suppressed patterns:")
+                for item in key_fp[:10]:
+                    lines.append(f"  * {item}")
+            if key_eps:
+                lines.append("- Previously important endpoints:")
+                for item in key_eps[:10]:
+                    lines.append(f"  * {item}")
+
+        if relevant:
+            lines.append("KNOWLEDGE BASE LESSONS:")
+            for l in relevant[-20:]:
+                lines.append(f"- [{l['type']}] {l.get('rule','')}")
+                if l.get("finding_title"):
+                    lines.append(f"  (re: '{l['finding_title']}')")
+        return "\n".join(lines)[:12000]
 
     def should_skip(self, test_type: str, url: str, param: str = "") -> tuple:
         """
@@ -9317,15 +9445,92 @@ class PentestPipeline:
                 result = kali.smart_ffuf(base_dir, wl, cur_p, mode="dir", max_time_seconds=level_time)
                 if not result.get("available", True):
                     continue
+                raw_hits = result.get("results", [])
+                max_analyze = max(30, int(os.environ.get("DIR_FUZZ_MAX_ANALYZE", "120")))
+                per_signature_cap = max(1, int(os.environ.get("DIR_FUZZ_MAX_PER_SIGNATURE", "6")))
+                hits_to_analyze: List[dict] = []
+                fp_count: Dict[tuple, int] = {}
+                for hit in raw_hits:
+                    fp = (
+                        hit.get("status", 0),
+                        hit.get("size", 0),
+                        hit.get("words", 0),
+                        hit.get("lines", 0),
+                    )
+                    used = fp_count.get(fp, 0)
+                    if used >= per_signature_cap:
+                        continue
+                    fp_count[fp] = used + 1
+                    hits_to_analyze.append(hit)
+                    if len(hits_to_analyze) >= max_analyze:
+                        break
+                if len(raw_hits) > len(hits_to_analyze):
+                    console.print(
+                        f"  [yellow]  Dir fuzz smart-sampling: total={len(raw_hits)}, "
+                        f"signature={len(fp_count)}, analyzed={len(hits_to_analyze)}, "
+                        f"skipped={len(raw_hits)-len(hits_to_analyze)}[/yellow]"
+                    )
                 level_findings: List[Finding] = []
-                for hit in result.get("results",[]):
+                processed = 0
+                skipped_default = 0
+                skipped_template = 0
+                batch_started = time.time()
+                last_progress = batch_started
+                progress_every = max(25, min(200, max(1, len(hits_to_analyze) // 10)))
+                time_limit_hit = False
+                template_seen: Dict[tuple, int] = {}
+                for hit in hits_to_analyze:
+                    if (time.time() - scan_start) > global_max_time:
+                        console.print(
+                            f"  [yellow]  Dir fuzz stopped mid-batch: "
+                            f"time budget {global_max_time}s tugadi[/yellow]"
+                        )
+                        time_limit_hit = True
+                        break
                     hit_url  = hit.get("url") or f"{base_dir}/{hit.get('input','')}".replace("//","/")
                     hit_size = hit.get("size",0)
                     hit_st   = hit.get("status",0)
+                    hit_words = hit.get("words", 0)
+                    hit_lines = hit.get("lines", 0)
+
+                    # Likely default/placeholder response (same shape as ffuf baseline) -> skip early.
+                    size_like_default = any(abs(hit_size - s) <= max(8, cur_p.tolerance_bytes) for s in (cur_p.filter_sizes or []))
+                    words_like_default = any(abs(hit_words - w) <= 2 for w in (cur_p.filter_words or []))
+                    lines_like_default = any(abs(hit_lines - ln) <= 1 for ln in (cur_p.filter_lines or []))
+                    if size_like_default and (words_like_default or lines_like_default):
+                        skipped_default += 1
+                        processed += 1
+                        continue
+
                     r        = self.client.get(hit_url)
                     body     = r.get("body","")
+
+                    # Template dedupe: header/footer/navbar/content shell bir xil bo'lsa
+                    # faqat bir necha representative URL AI orqali tahlil qilinadi.
+                    title_m = re.search(r'<title[^>]*>(.*?)</title>', body, re.I | re.S)
+                    title = (title_m.group(1).strip().lower() if title_m else "")[:120]
+                    norm = re.sub(r"\d{2,}", "#", body.lower())
+                    norm = re.sub(r"\s+", " ", norm).strip()
+                    head = norm[:140]
+                    tail = norm[-140:] if len(norm) > 140 else norm
+                    tpl_sig = (
+                        hit_st,
+                        hit_size // 32,
+                        hit_words // 5,
+                        hit_lines // 3,
+                        title,
+                        head,
+                        tail,
+                    )
+                    seen = template_seen.get(tpl_sig, 0)
+                    if seen >= per_signature_cap:
+                        skipped_template += 1
+                        processed += 1
+                        continue
+                    template_seen[tpl_sig] = seen + 1
+
                     verdict  = ai.analyze_dir_hit(
-                        hit_url, hit_st, hit_size, hit.get("words",0), hit.get("lines",0), body, cur_p
+                        hit_url, hit_st, hit_size, hit_words, hit_lines, body, cur_p
                     )
                     if verdict.get("is_sensitive") and verdict.get("confidence",0)>=MIN_CONFIDENCE:
                         c = verdict.get("risk","Info")
@@ -9351,6 +9556,25 @@ class PentestPipeline:
                         nd = hit_url.rstrip("/")
                         if nd not in visited_dirs:
                             queue_dirs.append(nd)
+                    processed += 1
+                    now = time.time()
+                    if processed % progress_every == 0 or (now - last_progress) >= 12:
+                        elapsed_batch = max(0.1, now - batch_started)
+                        rate = processed / elapsed_batch
+                        remain = max(0, len(hits_to_analyze) - processed)
+                        eta = int(remain / rate) if rate > 0 else 0
+                        console.print(
+                            f"  [dim]  Dir fuzz progress: {processed}/{len(hits_to_analyze)} "
+                            f"(findings={len(level_findings)}, queue={len(queue_dirs)}, eta~{eta}s)[/dim]"
+                        )
+                        last_progress = now
+                if skipped_default or skipped_template:
+                    console.print(
+                        f"  [dim]  Dir fuzz skipped: default_like={skipped_default}, "
+                        f"template_duplicate={skipped_template}[/dim]"
+                    )
+                if time_limit_hit:
+                    break
                 if level_findings and HAS_OLLAMA:
                     risk_summary = [f.risk for f in level_findings]
                     ai_decision = ai._call(
