@@ -843,7 +843,6 @@
       frag.appendChild(s);
     });
     box.appendChild(frag);
-    while(box.childNodes.length>6000) box.removeChild(box.firstChild);
     $('liveLineCount').textContent=`${box.childNodes.length} qator`;
     if(stick) box.scrollTop=box.scrollHeight;
   }

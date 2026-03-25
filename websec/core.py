@@ -593,7 +593,7 @@ class FailureMemory:
             "tool":        finding.tool,
             "param_type":  self._param_type(finding.param),
             "payload_sig": self._payload_signature(finding.payload),
-            "status_diff": finding.baseline_diff[:80] if finding.baseline_diff else "",
+            "status_diff": finding.baseline_diff if finding.baseline_diff else "",
             "fp_reason":   fp_reason[:200],
             "tech_lang":   (tech or {}).get("lang", "unknown"),
             "tech_fw":     (tech or {}).get("framework", "unknown"),
@@ -603,7 +603,7 @@ class FailureMemory:
             self._fps.append(pattern)
         console.print(
             f"  [dim yellow]  📚 Lesson learned (FP): "
-            f"{finding.owasp_id} via {finding.tool} — {fp_reason[:80]}[/dim yellow]"
+            f"{finding.owasp_id} via {finding.tool} — {fp_reason}[/dim yellow]"
         )
 
     def was_false_positive_before(self, owasp_id: str, tool: str,
@@ -686,7 +686,7 @@ class FailureMemory:
             "ts":        datetime.datetime.now().isoformat(),
             "vuln_type": vuln_type,
             "payload_sig": sig,
-            "payload_preview": payload[:80],
+            "payload_preview": payload,
             "tech_lang": (tech or {}).get("lang", "unknown"),
             "tech_fw":   (tech or {}).get("framework", "unknown"),
             "reason":    reason[:200],
@@ -748,7 +748,7 @@ class FailureMemory:
                 if p["tech_lang"] == tech_lang or p["url_pattern"] == url_pattern:
                     lessons.append(
                         f"- Previously marked as FP: {p['owasp_id']} via "
-                        f"{p['tool']} ({p['fp_reason'][:80]})"
+                        f"{p['tool']} ({p['fp_reason']})"
                     )
 
             # Wrong action lessons
@@ -1746,6 +1746,31 @@ class AIEngine:
     def _clean(text: str, max_chars: int = 2000) -> str:
         return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text[:max_chars])
 
+    @staticmethod
+    def _extract_json_payload(text: str, expect_list: bool = False) -> Optional[Any]:
+        """
+        Extract first valid JSON object/array from model output.
+        Handles extra prose before/after JSON blocks.
+        """
+        if not text:
+            return None
+        clean = re.sub(r'```json|```', '', str(text), flags=re.IGNORECASE).strip()
+        decoder = json.JSONDecoder()
+        expected_starts = "[" if expect_list else "{["
+
+        for idx, ch in enumerate(clean):
+            if ch not in expected_starts:
+                continue
+            try:
+                parsed, _ = decoder.raw_decode(clean[idx:])
+            except Exception:
+                continue
+            if expect_list and isinstance(parsed, list):
+                return parsed
+            if not expect_list and isinstance(parsed, dict):
+                return parsed
+        return None
+
     def _validate(self, r: dict) -> dict:
         if not isinstance(r, dict): return {}
         if "confidence" in r:
@@ -1785,26 +1810,22 @@ class AIEngine:
                         {"role": "user",   "content": prompt},
                     ],
                 )
-                raw   = resp["message"]["content"]
-                clean = re.sub(r'```json|```', '', raw).strip()
-
-                # Try list first if expected
-                if expect_list:
-                    m = re.search(r'\[.*\]', clean, re.DOTALL)
-                    if m:
-                        result = json.loads(m.group())
-                        if cache: self._cache[key] = result
-                        return result
-
-                m = re.search(r'\{.*\}', clean, re.DOTALL)
-                if m:
-                    result = json.loads(m.group())
-                    result = self._validate(result)
-                    if cache: self._cache[key] = result
+                raw = resp["message"]["content"]
+                parsed = self._extract_json_payload(raw, expect_list=expect_list)
+                if parsed is not None:
+                    if expect_list:
+                        if cache:
+                            self._cache[key] = parsed
+                        self._call_count += 1
+                        self._error_count = 0
+                        return parsed
+                    result = self._validate(parsed)
+                    if cache:
+                        self._cache[key] = result
                     self._call_count += 1
                     self._error_count = 0
                     return result
-                break
+                raise ValueError("AI returned no valid JSON payload")
             except Exception as e:
                 last_err = e
                 self._error_count += 1
@@ -1812,9 +1833,12 @@ class AIEngine:
                     self._client = None
                     time.sleep(4 * (attempt + 1))
                     continue
+                if attempt < 2:
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
                 break
         if last_err:
-            console.print(f"[dim red]  AI error: {str(last_err)[:80]}[/dim red]")
+            console.print(f"[dim red]  AI error: {str(last_err)}[/dim red]")
         return None
 
     # ── Dynamic Payload Generation ────────────────────────────────────────────
@@ -2169,7 +2193,7 @@ Return JSON: {{
     def analyze_page(self, url: str, status: int, body: str,
                      headers: dict, is_200: dict) -> dict:
         title = re.search(r'<title[^>]*>(.*?)</title>', body, re.I|re.S)
-        title = title.group(1).strip()[:80] if title else ""
+        title = title.group(1).strip() if title else ""
         sens  = RiskScorer.score_body(body)
         prompt = f"""Analyze this HTTP response for security testing.
 URL: {url}
@@ -2217,7 +2241,7 @@ Return JSON: {{"found":true,"owasp_id":"A01","risk":"High","confidence":80,"titl
                               child_status: int, child_body: str,
                               child_headers: dict, context: str = "") -> Optional[dict]:
         title_m    = re.search(r'<title[^>]*>(.*?)</title>', child_body, re.I|re.S)
-        page_title = title_m.group(1).strip()[:80] if title_m else ""
+        page_title = title_m.group(1).strip() if title_m else ""
         ct_hdr     = child_headers.get("content-type", child_headers.get("Content-Type",""))
         body_lines = child_body.split("\n")
         body_preview = self._clean("\n".join(body_lines[:60]), 4000)
@@ -2395,7 +2419,7 @@ Return JSON: {{"username_field":"username","password_field":"password","csrf_fie
             {"url": ep.url, "method": ep.method,
              "params": list(ep.params.keys())[:6], "source": ep.discovered_by,
              "score": ep.score}
-            for ep in endpoints[:80]
+            for ep in endpoints
         ]
         prompt = f"""Prioritize {len(endpoints)} endpoints for OWASP testing.
 High priority: login, admin, API, id params, file/path params, upload endpoints.
@@ -2576,9 +2600,9 @@ class ReconEngine:
 
     def _parse_os(self, out: str) -> str:
         m = re.search(r'OS details?:\s*(.+?)\n', out)
-        if m: return m.group(1).strip()[:80]
+        if m: return m.group(1).strip()
         m = re.search(r'Aggressive OS guesses?:\s*(.+?)\n', out)
-        return m.group(1).strip()[:80] if m else "unknown"
+        return m.group(1).strip() if m else "unknown"
 
     def _build_targets(self, host, ip, open_ports, port_hint, has_scheme, raw_input) -> list:
         targets, checked = [], set()
@@ -2641,7 +2665,7 @@ class ReconEngine:
         tech = {}
         for m in re.finditer(r"(\w[\w.-]+)\[([^\]]+)\]", out):
             if m.group(1) not in ("HTTPServer","IP","Country","Script","HTML5"):
-                tech[m.group(1)] = m.group(2)[:80]
+                tech[m.group(1)] = m.group(2)
         return tech, out
 
     def _subdomain_discovery(self, domain: str) -> list:
@@ -3111,7 +3135,7 @@ class Crawler:
                         # Sabab: /admin/config 200 qaytarsa, u balki login page,
                         # lekin keyinchalik fuzz qilish uchun kerak bo'lishi mumkin
                         reason = ai_r.get("reason","") if ai_r else "AI unavailable"
-                        console.print(f"  [dim]  → child 200 (not BAC): {url} — {reason[:60]}[/dim]")
+                        console.print(f"  [dim]  → child 200 (not BAC): {url} — {reason}[/dim]")
 
                 elif r["status"] == 403:
                     # Recursive — 403 child ham queue ga
@@ -3574,7 +3598,7 @@ class KaliToolRunner:
             f"-o '{out_file}' -of json -s {auth}"
         )
         console.print(
-            f"  [dim]  ffuf: {Path(wordlist).name} -> {fuzz_url[:60]} "
+            f"  [dim]  ffuf: {Path(wordlist).name} -> {fuzz_url} "
             f"(maxtime={max_time_seconds}s)[/dim]"
         )
         _run_cmd(cmd, timeout=max_time_seconds + 15)
@@ -5261,11 +5285,11 @@ Return JSON: {{"verify_urls": ["/api/me", "/profile", ...]}}"""
     def _print_finding(self, f: Finding):
         c = {"Critical":"bold red","High":"red","Medium":"yellow","Low":"cyan","Info":"dim"}.get(f.risk,"white")
         console.print(
-            f"  [{c}][{f.risk}][/{c}] [bold]{f.owasp_id} — {f.title[:80]}[/bold] "
+            f"  [{c}][{f.risk}][/{c}] [bold]{f.owasp_id} — {f.title}[/bold] "
             f"[dim](conf:{f.confidence}%)[/dim]"
         )
         if f.evidence:
-            console.print(f"    [dim]Evidence: {f.evidence[:120]}[/dim]")
+            console.print(f"    [dim]Evidence: {f.evidence}[/dim]")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6915,8 +6939,8 @@ Return JSON:
         c = {"Critical":"bold red","High":"red",
              "Medium":"yellow","Low":"cyan"}.get(f.risk,"white")
         console.print(
-            f"  [{c}]  🎯 [{f.risk}][/{c}] {f.owasp_id} — {f.title[:70]}\n"
-            f"  [dim]     Evidence: {f.evidence[:100]}[/dim]"
+            f"  [{c}]  🎯 [{f.risk}][/{c}] {f.owasp_id} — {f.title}\n"
+            f"  [dim]     Evidence: {f.evidence}[/dim]"
         )
 
 
@@ -7044,7 +7068,7 @@ class JWTAttacker:
                                 payload=none_jwt[:100],
                                 evidence="Server accepted JWT with alg:none",
                                 baseline_diff="alg:HS256→alg:none",tool_output=r["body"][:300],
-                                request_raw=f"GET {url}\nAuthorization: Bearer {none_jwt[:80]}",
+                                request_raw=f"GET {url}\nAuthorization: Bearer {none_jwt}",
                                 response_raw=r["body"][:300],
                                 exploit_cmd=f"# Forge JWT with alg:none",
                                 remediation="Whitelist allowed algorithms. Reject alg:none.",
@@ -7435,7 +7459,7 @@ class SourceCodeReviewer:
             try:
                 response = self.client.get(js_url)
             except Exception as exc:
-                self.console.print(f"  [dim red]  JS fetch error: {js_url[:60]} — {exc}[/dim red]")
+                self.console.print(f"  [dim red]  JS fetch error: {js_url} — {exc}[/dim red]")
                 continue
             if response.get("status") != 200 or not response.get("body"):
                 continue
@@ -7487,7 +7511,7 @@ class SourceCodeReviewer:
                 self.console.print(f"  [yellow]  🔍 Candidate [{risk}]: {pattern['name']} in {url.split('/')[-1] or url}:{line_no}[/yellow]")
                 ai_result = self._ai_classify(pattern_name=pattern["name"], matched_value=matched_value, context_lines=context_lines, url=url, suggested_risk=risk)
                 if not ai_result.get("is_real_leak", False):
-                    self.console.print(f"  [dim]    → AI: NOT a real leak — {str(ai_result.get('reason', ''))[:80]}[/dim]")
+                    self.console.print(f"  [dim]    → AI: NOT a real leak — {str(ai_result.get('reason', ''))}[/dim]")
                     continue
                 confirmed += 1
                 final_risk = ai_result.get("risk", risk)
@@ -7523,7 +7547,7 @@ FOUND IN SOURCE CODE:
   Suggested risk: {suggested_risk}
 
 <untrusted_content>
-  Matched value: {matched_value[:80]!r}
+  Matched value: {matched_value!r}
 
   CODE CONTEXT (surrounding lines):
 {context_lines}
@@ -7599,7 +7623,7 @@ Return JSON:
             try:
                 response = self.client.get(url)
             except Exception as exc:
-                self.console.print(f"  [dim]  Config probe error: {url[:60]} — {exc}[/dim]")
+                self.console.print(f"  [dim]  Config probe error: {url} — {exc}[/dim]")
                 continue
             if response.get("status") != 200 or not response.get("body"):
                 continue
@@ -7802,7 +7826,7 @@ class NucleiRunner:
                 remediation=f"Fix {tid}.",
                 confirmed=risk in ("Critical","High"), tool="nuclei",
             ))
-            console.print(f"  [bold red]🎯 Nuclei [{risk}] {tid[:60]}[/bold red]")
+            console.print(f"  [bold red]🎯 Nuclei [{risk}] {tid}[/bold red]")
         return findings
 
 
@@ -8513,7 +8537,7 @@ class KnowledgeBase:
                 self.lessons.append(lesson)
                 self.save()
                 console.print(
-                    f"[green]  ✓ Dars saqlandi: {extracted_rule.get('rule','')[:80]}[/green]\n"
+                    f"[green]  ✓ Dars saqlandi: {extracted_rule.get('rule','')}[/green]\n"
                 )
 
         console.print("[dim]  Knowledge Base chat tugadi.[/dim]")
@@ -8958,7 +8982,7 @@ class PentestPipeline:
 
         for ep in planned[:limit]:
             if ep.score <= 0: continue
-            console.print(f"[dim]  ▶ {ep.method} {ep.url[:70]} (score:{ep.score:.0f})[/dim]")
+            console.print(f"[dim]  ▶ {ep.method} {ep.url} (score:{ep.score:.0f})[/dim]")
             t = threading.Thread(target=fuzz_ep, args=(ep,), daemon=True)
             threads.append(t); t.start()
 
@@ -9213,7 +9237,7 @@ class PentestPipeline:
         self.session.logged_in = True
         self.session.username  = source.username
         self.session.role      = source.role
-        console.print(f"  [dim]  Session propagated: cookies={list(self.session.cookies.keys())[:5]}[/dim]")
+        console.print(f"  [dim]  Session propagated: cookies={list(self.session.cookies.keys())}[/dim]")
 
     def _oob_detection(self, endpoints: List[Endpoint], oob_domain: str) -> List[Finding]:
         findings    = []
@@ -9306,7 +9330,7 @@ class PentestPipeline:
                     if verdict.get("is_sensitive") and verdict.get("confidence",0)>=MIN_CONFIDENCE:
                         c = verdict.get("risk","Info")
                         cl = {"Critical":"bold red","High":"red","Medium":"yellow","Low":"cyan"}.get(c,"dim")
-                        console.print(f"  [{cl}]  🎯 {hit_url}[/{cl}] [dim]{c} — {verdict.get('reason','')[:60]}[/dim]")
+                        console.print(f"  [{cl}]  🎯 {hit_url}[/{cl}] [dim]{c} — {verdict.get('reason','')}[/dim]")
                         finding = Finding(
                             owasp_id=verdict.get("owasp_id","A05"),
                             owasp_name=verdict.get("owasp_name","Security Misconfiguration"),

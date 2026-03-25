@@ -46,6 +46,7 @@ STAGES = [
 ]
 
 FINAL_STATUSES = {"done", "failed", "stopped"}
+MAX_LOG_LINES = int(os.environ.get("WEB_PANEL_MAX_LOG_LINES", "0"))
 
 
 def now_iso() -> str:
@@ -191,8 +192,8 @@ class ScanRuntime:
     def append_log(self, line: str) -> None:
         with self.log_lock:
             self.logs.append(line)
-            if len(self.logs) > 8000:
-                self.logs = self.logs[-8000:]
+            if MAX_LOG_LINES > 0 and len(self.logs) > MAX_LOG_LINES:
+                self.logs = self.logs[-MAX_LOG_LINES:]
         update_stage_from_line(self, line)
         capture_report_files(self, line)
 
