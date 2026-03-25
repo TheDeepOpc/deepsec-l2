@@ -387,8 +387,9 @@ def api_scan_start() -> Response:
     scan_id = uuid.uuid4().hex[:12]
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
-    # Authorized pentest — never set WEB_SAFE_REPORTS
+
     env.pop("WEB_SAFE_REPORTS", None)
+
     if payload.get("ollama_host"):
         env["OLLAMA_HOST"] = str(payload["ollama_host"])
     if payload.get("model"):
@@ -406,8 +407,7 @@ def api_scan_start() -> Response:
         env=env,
     )
 
-    runtime.append_log("\033[31m[DEEPSEC] CO-PILOT INITIATED SCAN\033[0m")
-    runtime.append_log("[DEEPSEC] CMD: " + " ".join(runtime.cmd))
+    # ✅ ENG MUHIM FIX — runtime avval yaratiladi
     runtime = ScanRuntime(
         id=scan_id,
         target=str(payload.get("target") or "").strip(),
@@ -430,7 +430,6 @@ def api_scan_start() -> Response:
 | $$$$$$$/| $$$$$$$$| $$$$$$$$| $$      |  $$$$$$/| $$$$$$$$|  $$$$$$/
 |_______/ |________/|________/|__/       \______/ |________/ \______/ 
 
-                       
                         [  C O - P I L O T  ]
                     ----AI based Pentest Agent----
                  
@@ -441,17 +440,20 @@ REPO: https://github.com/TheDeepOpc/deepsec-l2
 \033[0m
 """
 
+    # ✅ endi bemalol ishlaydi
     runtime.append_log(ascii_banner)
-    runtime.append_log("\033[31m[DEEPSEC] CO-PILOT INITIATED SCAN\033[0m")
-    runtime.append_log("[DEEPSEC] CMD: " + " ".join(runtime.cmd))
-    
+  
 
     with scans_lock:
         scans[scan_id] = runtime
 
     threading.Thread(target=scan_reader, args=(runtime,), daemon=True).start()
-    return jsonify({"ok": True, "id": scan_id, "scan": runtime.snapshot()})
 
+    return jsonify({
+        "ok": True,
+        "id": scan_id,
+        "scan": runtime.snapshot()
+    })
 
 @app.post("/api/scan/<scan_id>/stop")
 def api_scan_stop(scan_id: str) -> Response:
