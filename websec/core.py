@@ -119,6 +119,7 @@ AGENTIC_MAX_ITER = 20      # max iterations in agentic loop per endpoint
 AI_CALL_TIMEOUT_SEC = max(5, int(os.environ.get("AI_CALL_TIMEOUT_SEC", "25")))
 PAGE_ANALYSIS_AI_TIMEOUT_SEC = max(3, int(os.environ.get("PAGE_ANALYSIS_AI_TIMEOUT_SEC", "8")))
 PAGE_ANALYSIS_PROGRESS_EVERY = max(1, int(os.environ.get("PAGE_ANALYSIS_PROGRESS_EVERY", "1")))
+AI_MIN_CALL_INTERVAL_SEC = max(0.3, float(os.environ.get("AI_MIN_CALL_INTERVAL_SEC", "0.8")))
 DEFAULT_UA       = "Mozilla/5.0 (X11; Linux x86_64) PentestAI/8.0"
 WEB_SAFE_REPORTS = str(os.environ.get("WEB_SAFE_REPORTS", "")).lower() in {"1", "true", "yes", "on"}
 WEB_SAFE_PLACEHOLDER = "[hidden in web-safe report]"
@@ -1743,33 +1744,10 @@ class AIEngine:
 
     def _chat_text(self, messages: List[dict], timeout_sec: Optional[float] = None) -> str:
         """
-        Send chat request to Ollama with a hard timeout.
-        Uses HTTP API when requests is available to prevent indefinite hangs.
+        Send chat request to Ollama client.
+        (Kept on ollama client path to avoid aggressive HTTP 429 bursts)
         """
-        timeout_val = float(timeout_sec if timeout_sec is not None else AI_CALL_TIMEOUT_SEC)
-        timeout_val = max(3.0, timeout_val)
         model = resolve_model_name(MODEL_NAME)
-
-        if HAS_REQUESTS:
-            url = urllib.parse.urljoin(OLLAMA_HOST.rstrip("/") + "/", "api/chat")
-            payload = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-            }
-            # connect timeout short, read timeout bounded
-            resp = requests.post(url, json=payload, timeout=(4, timeout_val))
-            resp.raise_for_status()
-            data = resp.json() if resp.content else {}
-            msg = (data.get("message") or {}).get("content")
-            if isinstance(msg, str) and msg.strip():
-                return msg
-            alt = data.get("response")
-            if isinstance(alt, str) and alt.strip():
-                return alt
-            raise ValueError("Ollama returned empty chat content")
-
-        # Fallback path if requests is unavailable
         client = self._get_client()
         resp = client.chat(model=model, messages=messages)
         msg = resp.get("message", {}).get("content")
@@ -1827,8 +1805,8 @@ class AIEngine:
 
         with self._lock:
             elapsed = time.time() - self._last_call
-            if elapsed < 0.3:
-                time.sleep(0.3 - elapsed)
+            if elapsed < AI_MIN_CALL_INTERVAL_SEC:
+                time.sleep(AI_MIN_CALL_INTERVAL_SEC - elapsed)
             self._last_call = time.time()
 
         last_err = None
@@ -1861,6 +1839,11 @@ class AIEngine:
                 last_err = e
                 self._error_count += 1
                 emsg = str(e).lower()
+                if ("429" in emsg or "too many requests" in emsg) and attempt < (retries - 1):
+                    backoff = min(30, 3 * (attempt + 1))
+                    console.print(f"[dim yellow]  AI rate-limited (429), retrying in {backoff}s...[/dim yellow]")
+                    time.sleep(backoff)
+                    continue
                 if ("500" in emsg or "timeout" in emsg or "timed out" in emsg) and attempt < (retries - 1):
                     self._client = None
                     time.sleep(4 * (attempt + 1))
