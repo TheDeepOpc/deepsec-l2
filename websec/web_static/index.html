@@ -1123,9 +1123,22 @@
     if(!scanId||state.finalizedIds.has(scanId)) return;
     try {
       const record=await loadFindingsFromServer(scanId);
+      const hasPayload = !!(
+        record &&
+        (
+          (Array.isArray(record.findings) && record.findings.length) ||
+          (Array.isArray(record.suppressed) && record.suppressed.length) ||
+          (Array.isArray(record.reports) && record.reports.length) ||
+          Number((record.summary && record.summary.total) || 0) > 0
+        )
+      );
+      if(!hasPayload && attempt < 8){
+        setTimeout(()=>finalizeScan(scanId,attempt+1),1400);
+        return;
+      }
       if(record){ state.finalizedIds.add(scanId); upsertScan(record); renderScanned(); renderFindings(); renderEp(); refreshDash(); }
     }catch(e){
-      if(attempt<4){ setTimeout(()=>finalizeScan(scanId,attempt+1),1400); return; }
+      if(attempt<8){ setTimeout(()=>finalizeScan(scanId,attempt+1),1400); return; }
       console.error(e);
     }finally{ if(state.activeScan&&FINAL.has(state.activeScan.status)) closeStream(); }
   }
@@ -1652,7 +1665,14 @@ ${rec.ai_analysis?`<div class="card"><h3>AI Assessment</h3><pre>${esc(rec.ai_ana
     }catch(e){ console.error(e); }
   }
   function ensureCurrentRecord() {
-    if(state.currentRecord && state.historyScans.some(s=>s.id===state.currentRecord.id)) return state.currentRecord;
+    if(state.currentRecord && state.historyScans.some(s=>s.id===state.currentRecord.id)) {
+      const richer = state.historyScans.find(s =>
+        (s.target||'') === (state.currentRecord.target||'') &&
+        Number((s.findings||[]).length) > Number((state.currentRecord.findings||[]).length)
+      );
+      if(richer) state.currentRecord = richer;
+      return state.currentRecord;
+    }
     if(!state.historyScans.length){ state.currentRecord=null; return null; }
     let best=state.historyScans.find(s=>Number((s.findings||[]).length)>0);
     if(!best) best=state.historyScans[0];

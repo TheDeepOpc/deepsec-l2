@@ -217,7 +217,7 @@ class ScanRuntime:
             "deep": self.deep,
             "test_env": self.test_env,
             "returncode": self.returncode,
-            "reports": [p.name for p in self.report_files.values() if isinstance(p, Path) and p.exists()],
+            "reports": scan_reports_list(self),
             "findings_total": len(findings),
             "summary": summary,
             "critical": int(risk_counts.get("Critical", 0)),
@@ -259,6 +259,18 @@ def persist_findings(scan: ScanRuntime) -> None:
                 suffix = report_path.suffix.lower()
                 key = "html" if suffix == ".html" else "md" if suffix == ".md" else "findings"
                 scan.report_files[key] = report_path
+
+
+def scan_reports_list(scan: ScanRuntime) -> List[str]:
+    names = [
+        p.name for p in scan.report_files.values()
+        if isinstance(p, Path) and p.exists()
+    ]
+    payload_names = scan.findings_payload.get("reports", []) if isinstance(scan.findings_payload, dict) else []
+    for name in payload_names:
+        if isinstance(name, str) and name not in names:
+            names.append(name)
+    return names
 
 
 def build_command(payload: Dict[str, Any]) -> List[str]:
@@ -699,13 +711,18 @@ def api_scan_findings(scan_id: str) -> Response:
             "scan_log": scan.findings_payload.get("scan_log", []),
             "endpoint_analysis": scan.findings_payload.get("endpoint_analysis", []),
             "ai_analysis": scan.findings_payload.get("ai_analysis", ""),
-            "reports": scan.findings_payload.get("reports", []),
+            "reports": scan_reports_list(scan),
         }
     )
 
 
 @app.get("/api/scans")
 def api_scans() -> Response:
+    with scans_lock:
+        current_scans = list(scans.values())
+    for scan in current_scans:
+        if scan.status in FINAL_STATUSES or scan.report_files:
+            persist_findings(scan)
     with scans_lock:
         payload = [scan.snapshot() for scan in scans.values()]
     payload.sort(key=lambda item: item.get("created_at") or "", reverse=True)

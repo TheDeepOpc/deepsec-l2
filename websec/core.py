@@ -2070,9 +2070,18 @@ CORE RULES:
 class AIEngine:
     VALID_RISKS = {"Critical","High","Medium","Low","Info"}
     VALID_OWASP = {f"A{i:02d}" for i in range(1,11)}
+    SUPPORTED_AGENTIC_ACTIONS = {
+        "stop",
+        "test_sqli", "test_xss", "test_lfi", "test_ssti", "test_ssrf",
+        "test_cmdi", "test_idor", "test_auth", "test_header",
+        "fuzz_params", "test_nosqli", "test_stored_xss",
+        "test_second_order_sqli", "test_mass_assign", "test_open_redirect",
+        "test_crlf", "test_prototype", "test_graphql",
+    }
 
     def __init__(self):
         self._cache:         dict = {}
+        self._page_analysis_cache: dict = {}
         self._dir_hit_verdict_cache: dict = {}
         self._sensitive_verdict_cache: dict = {}
         self._access_verdict_cache: dict = {}
@@ -2439,6 +2448,54 @@ Return JSON: {{"payloads": ["payload1", "payload2", ...], "reasoning": "why thes
             t for t in ep_intel["priority_tests"]
             if f"test_{t}" not in done_actions and f"mandatory:{t}" not in " ".join(tests_done)
         ]
+        response_class = str(scan_state.get("response_class") or "unknown")
+        response_reason = str(scan_state.get("response_class_reason") or "")
+        response_title = str(scan_state.get("response_title") or "")
+        response_sample = str(scan_state.get("response_body_sample") or scan_state.get("last_response_snippet") or "")
+        response_sample_clean = self._clean(response_sample, 900)
+        response_sample_l = response_sample.lower()
+        strong_sensitive = bool(scan_state.get("has_strong_sensitive_candidate"))
+        generic_guard_reason = ""
+
+        if not strong_sensitive:
+            if response_class in {"static_asset", "public_page"}:
+                generic_guard_reason = (
+                    f"Response body classified as {response_class}; path name and synthetic headers "
+                    f"alone are not evidence of a real candidate."
+                )
+            elif response_class == "login_page":
+                generic_guard_reason = (
+                    "Response body is only a login page. No protected/admin/config data is visible."
+                )
+            elif int(scan_state.get("last_status", 0) or 0) == 0 and not response_sample.strip():
+                generic_guard_reason = (
+                    "Endpoint returned no usable body / unreachable response. Cannot infer a vulnerability "
+                    "or candidate from URL name alone."
+                )
+            elif response_class == "data_response":
+                if any(token in response_sample_l for token in ['"openapi"', '"swagger"', '/components/schemas', '"paths"']):
+                    generic_guard_reason = (
+                        "Response body looks like API documentation/schema, not protected user/config data."
+                    )
+            elif response_class == "unknown":
+                if not response_sample.strip():
+                    generic_guard_reason = "Response body is empty; there is no content evidence to justify more testing."
+                elif (("<html" in response_sample_l or "<body" in response_sample_l or "<!doctype html" in response_sample_l) and
+                      not any(token in response_sample_l for token in [
+                          "root:x:", "aws_", "api_key", "secret_key", "\"users\"", "\"role\"",
+                          "\"permissions\"", "\"account_id\"", "\"balance\"", "\"token\"",
+                      ])):
+                    generic_guard_reason = (
+                        "Response body looks like a generic HTML shell/error page with no protected data evidence."
+                    )
+
+        if generic_guard_reason:
+            return {
+                "action": "stop",
+                "reason": generic_guard_reason,
+                "priority": 0,
+                "stop_reason": generic_guard_reason,
+            }
 
         prompt = f"""You are an expert black-box penetration tester making decisions.
 
@@ -2460,6 +2517,13 @@ Parameter Analysis:
 {ep_intel['param_analysis']}
 
 Response hints: {', '.join(ep_intel['response_hints']) if ep_intel['response_hints'] else 'none'}
+Response class: {response_class}
+Response class reason: {response_reason or 'none'}
+Response title: {response_title or 'none'}
+Strong sensitive evidence present: {strong_sensitive}
+Response body sample:
+{response_sample_clean or '(empty)'}
+
 Tests already done: {tests_done[-8:] if tests_done else ['none']}
 Findings so far: {scan_state.get('findings', [])}
 Signals: {scan_state.get('signals', [])[-5:]}
@@ -2480,6 +2544,11 @@ DECISION RULES:
    Always test_idor first, then test_sqli.
 5. fuzz_params is only for endpoints with no known params.
 6. stop only when all meaningful tests are done.
+7. You MUST inspect the response body sample before deciding.
+8. Never infer a vulnerability or candidate from URL keywords, status, size, or synthetic headers alone.
+9. If the body is empty, generic HTML, public content, login page, static asset, or API docs without protected data, choose stop.
+10. Never use phrases like "critical vulnerability discovered" unless the body itself shows real protected/config/secret data.
+11. Use only one of these actions: {sorted(self.SUPPORTED_AGENTIC_ACTIONS)}.
 
 Return JSON:
 {{
@@ -2491,6 +2560,25 @@ Return JSON:
 }}"""
         result = self._call(prompt, cache=False)
         if result:
+            action = str(result.get("action") or "stop")
+            if action not in self.SUPPORTED_AGENTIC_ACTIONS:
+                fallback_reason = (
+                    f"Unsupported AI action '{action}' rejected. "
+                    f"Body-aware planner only accepts supported actions."
+                )
+                if remaining_tests:
+                    return {
+                        "action": f"test_{remaining_tests[0]}",
+                        "param": "",
+                        "reason": fallback_reason,
+                        "priority": 4,
+                    }
+                return {
+                    "action": "stop",
+                    "reason": fallback_reason,
+                    "priority": 0,
+                    "stop_reason": fallback_reason,
+                }
             if result.get("action") == "fuzz_params" and params_formatted and remaining_tests:
                 best_action = f"test_{remaining_tests[0]}"
                 best_param = ""
@@ -2507,6 +2595,17 @@ Return JSON:
                     "reason": f"Auto-override: {ep_intel['endpoint_type']} endpoint needs {remaining_tests[0]} testing",
                     "priority": 9,
                 }
+            if result.get("action") == "stop":
+                stop_reason = str(result.get("stop_reason") or result.get("reason") or "")
+                if (not strong_sensitive) and any(token in stop_reason.lower() for token in [
+                    "critical vulnerability discovered", "vulnerability discovered", "sensitive config exposed",
+                    "credentials exposed", "backup publicly accessible",
+                ]):
+                    safe_reason = (
+                        "Stop accepted, but downgraded reasoning: response body does not contain concrete protected data evidence."
+                    )
+                    result["reason"] = safe_reason
+                    result["stop_reason"] = safe_reason
             return result
 
         if remaining_tests:
@@ -2612,14 +2711,38 @@ Return JSON: {{
         title = re.search(r'<title[^>]*>(.*?)</title>', body, re.I|re.S)
         title = title.group(1).strip() if title else ""
         sens  = RiskScorer.score_body(body)
-        body_preview = self._clean(body, PAGE_ANALYSIS_BODY_CHARS)
+        norm_body = re.sub(r"\d{2,}", "#", (body or "").lower())
+        norm_body = re.sub(r"\s+", " ", norm_body).strip()
+        cache_key = hashlib.md5(
+            json.dumps({
+                "status": int(status or 0),
+                "title": title.lower(),
+                "content_type": str((headers or {}).get("Content-Type", "")).lower(),
+                "body_hash": hashlib.md5(norm_body[:1800].encode("utf-8", errors="replace")).hexdigest(),
+            }, sort_keys=True).encode("utf-8", errors="replace")
+        ).hexdigest()
+        cached = self._page_analysis_cache.get(cache_key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+
+        preview_chars = min(PAGE_ANALYSIS_BODY_CHARS, 700)
+        if len(body) > 15000 or len(sens) > 3:
+            preview_chars = min(preview_chars, 450)
+        body_preview = self._clean(body, preview_chars)
+        sens_summary = [
+            {"label": s.get("label", ""), "key": s.get("key", "")}
+            for s in sens[:4]
+        ]
+        analysis_timeout = PAGE_ANALYSIS_AI_TIMEOUT_SEC
+        if preview_chars <= 450 or len(sens) > 2:
+            analysis_timeout = PAGE_ANALYSIS_AI_TIMEOUT_FALLBACK_SEC
         prompt = f"""Analyze this HTTP response for security testing.
 URL: {url}
 Status: {status}
 Title: {title}
 Body size: {len(body)}
-Sensitive data found: {json.dumps(sens)}
-Body (first {PAGE_ANALYSIS_BODY_CHARS}): {body_preview}
+Sensitive data hints: {json.dumps(sens_summary)}
+Body (first {preview_chars}): {body_preview}
 
 Return JSON: {{
   "is_real_page": true,
@@ -2634,12 +2757,46 @@ Return JSON: {{
   "risk": "Critical|High|Medium|Low|Info",
   "recommended_tests": ["sqli","xss","lfi","idor","ssrf","cmdi","ssti"]
 }}"""
-        return self._call(
+        result = self._call(
             prompt,
-            cache=False,
-            timeout_sec=PAGE_ANALYSIS_AI_TIMEOUT_SEC,
-            retries=1,
-        ) or {
+            cache=True,
+            timeout_sec=analysis_timeout,
+            retries=2,
+        )
+        if not result and preview_chars > 450:
+            compact_preview = self._clean(body, 420)
+            compact_prompt = f"""Classify this HTTP response for page triage.
+URL: {url}
+Status: {status}
+Title: {title}
+Content-Type: {str((headers or {}).get("Content-Type", ""))[:120]}
+Body size: {len(body)}
+Sensitive hints: {json.dumps(sens_summary)}
+Body (first 420): {compact_preview}
+
+Return JSON: {{
+  "is_real_page": true,
+  "is_auth_wall": false,
+  "is_bac_candidate": false,
+  "is_custom_404": false,
+  "page_type": "login|admin|api|dashboard|config|error|static|unknown",
+  "description": "short summary",
+  "sensitive_data": [],
+  "injection_points": [],
+  "suggested_child_paths": [],
+  "risk": "Critical|High|Medium|Low|Info",
+  "recommended_tests": []
+}}"""
+            result = self._call(
+                compact_prompt,
+                cache=True,
+                timeout_sec=PAGE_ANALYSIS_AI_TIMEOUT_FALLBACK_SEC,
+                retries=2,
+            )
+        if result:
+            self._page_analysis_cache[cache_key] = copy.deepcopy(result)
+            return result
+        fallback = {
             "is_real_page": is_200.get("real", False),
             "page_type": "unknown",
             "sensitive_data": [s["key"] for s in sens],
@@ -2648,6 +2805,8 @@ Return JSON: {{
             "risk": "Info",
             "recommended_tests": [],
         }
+        self._page_analysis_cache[cache_key] = copy.deepcopy(fallback)
+        return fallback
 
     # ── BAC Analysis ──────────────────────────────────────────────────────────
     def analyze_bac(self, bac_data: dict) -> Optional[dict]:
@@ -4543,6 +4702,27 @@ class AgenticFuzzEngine:
         self.oob      = oob
         self.memory   = ctx.memory  # FailureMemory reference
 
+    def _seed_scan_state_with_response(self, ep: Endpoint, scan_state: dict) -> None:
+        if ep.method != "GET":
+            return
+        resp = self.client.get(ep.url)
+        self._last_resp = resp
+        body = str(resp.get("body", ""))
+        headers = resp.get("headers", {}) or {}
+        profile = ResponseClassifier.classify(ep.url, headers, body, resp.get("status", 0))
+        sensitive_candidates = RiskScorer.score_body(body, url=ep.url, headers=headers)
+        scan_state["last_status"] = resp.get("status", scan_state.get("last_status", 0))
+        scan_state["last_size"] = len(body)
+        scan_state["last_response_snippet"] = body[:400]
+        scan_state["response_body_sample"] = body[:1200]
+        scan_state["response_class"] = profile.get("verdict", "unknown")
+        scan_state["response_class_reason"] = profile.get("reason", "")
+        scan_state["response_title"] = profile.get("title", "")
+        scan_state["response_error"] = resp.get("error", "")
+        scan_state["has_strong_sensitive_candidate"] = RiskScorer.has_strong_sensitive_candidate(
+            sensitive_candidates
+        )
+
     def test_endpoint(self, ep: Endpoint) -> List[Finding]:
         """
         True agentic loop: AI decides what to test next.
@@ -4583,7 +4763,14 @@ class AgenticFuzzEngine:
             "signals": signals,
             "findings": [f.title for f in findings[:5]],
             "last_response_snippet": "",
+            "response_body_sample": "",
+            "response_class": "unknown",
+            "response_class_reason": "",
+            "response_title": "",
+            "response_error": "",
+            "has_strong_sensitive_candidate": False,
         }
+        self._seed_scan_state_with_response(ep, scan_state)
 
         # Agentic loop: AI available bo'lsa, aks holda priority-based fallback
         ai_available = HAS_OLLAMA
@@ -4672,9 +4859,23 @@ class AgenticFuzzEngine:
             scan_state["signals"] = signals
 
             if hasattr(self, "_last_resp") and self._last_resp:
-                scan_state["last_response_snippet"] = self._last_resp.get("body", "")[:400]
+                last_body = str(self._last_resp.get("body", ""))
+                last_headers = self._last_resp.get("headers", {}) or {}
+                last_profile = ResponseClassifier.classify(
+                    ep.url, last_headers, last_body, self._last_resp.get("status", base_fp.status)
+                )
+                last_sensitive = RiskScorer.score_body(last_body, url=ep.url, headers=last_headers)
+                scan_state["last_response_snippet"] = last_body[:400]
+                scan_state["response_body_sample"] = last_body[:1200]
                 scan_state["last_status"] = self._last_resp.get("status", base_fp.status)
-                scan_state["last_size"]   = len(self._last_resp.get("body",""))
+                scan_state["last_size"]   = len(last_body)
+                scan_state["response_class"] = last_profile.get("verdict", "unknown")
+                scan_state["response_class_reason"] = last_profile.get("reason", "")
+                scan_state["response_title"] = last_profile.get("title", "")
+                scan_state["response_error"] = self._last_resp.get("error", "")
+                scan_state["has_strong_sensitive_candidate"] = RiskScorer.has_strong_sensitive_candidate(
+                    last_sensitive
+                )
 
         return findings
 
@@ -9851,6 +10052,153 @@ class PentestPipeline:
         self.oob     = OOBClient()
         self.reporter= Reporter("")
 
+    @staticmethod
+    def _equivalent_error_bucket(error: str) -> str:
+        err = str(error or "").lower()
+        if not err:
+            return "empty"
+        if "timeout" in err or "timed out" in err:
+            return "timeout"
+        if "ssl" in err or "tls" in err or "certificate" in err:
+            return "tls"
+        if "refused" in err or "reset" in err or "connection" in err:
+            return "connection"
+        if "name or service not known" in err or "getaddrinfo" in err or "dns" in err:
+            return "dns"
+        return err[:80]
+
+    @staticmethod
+    def _normalized_body_hash(body: str, max_chars: int = 2200) -> str:
+        norm = re.sub(r"\d{2,}", "#", str(body or "").lower())
+        norm = re.sub(r"\s+", " ", norm).strip()
+        return hashlib.md5(norm[:max_chars].encode("utf-8", errors="replace")).hexdigest()
+
+    def _agentic_equivalence_key(self, ep: Endpoint, resp: dict) -> Tuple[Optional[tuple], str]:
+        if ep.method != "GET":
+            return None, ""
+
+        status = int(resp.get("status", 0) or 0)
+        body = str(resp.get("body", ""))
+        headers = resp.get("headers", {}) or {}
+        profile = ResponseClassifier.classify(ep.url, headers, body, status)
+        verdict = str(profile.get("verdict") or "unknown")
+        ct = ResponseClassifier.normalize_content_type(headers)
+        title = str(profile.get("title") or "").lower()[:120]
+
+        sensitive_candidates = RiskScorer.score_body(body, url=ep.url, headers=headers)
+        if RiskScorer.has_strong_sensitive_candidate(sensitive_candidates):
+            return None, ""
+
+        if status == 0:
+            key = (
+                "status0",
+                self._equivalent_error_bucket(resp.get("error", "")),
+                verdict,
+                self._normalized_body_hash(body, max_chars=600),
+            )
+            return key, "equivalent unreachable response"
+
+        if verdict in {"static_asset", "public_page", "login_page"}:
+            key = (
+                "generic",
+                status,
+                verdict,
+                ct,
+                title,
+                self._normalized_body_hash(body),
+            )
+            return key, f"equivalent {verdict}"
+
+        if status in (401, 403):
+            key = (
+                "blocked",
+                status,
+                verdict,
+                ct,
+                title,
+                self._normalized_body_hash(body, max_chars=1600),
+            )
+            return key, "equivalent blocked/auth wall"
+
+        if verdict == "unknown":
+            # Same generic HTML/placeholder shell across many sensitive URLs should not
+            # trigger separate agentic loops when the body is effectively identical.
+            if (ct.startswith("text/html") or "<html" in body.lower() or "<body" in body.lower()) and len(body) <= 20000:
+                key = (
+                    "unknown_html",
+                    status,
+                    ct,
+                    title,
+                    self._normalized_body_hash(body),
+                )
+                return key, "equivalent generic HTML shell"
+            if not body and status in (200, 204, 301, 302, 404):
+                location = str(headers.get("location", "")).lower()[:180]
+                key = ("empty", status, ct, location)
+                return key, "equivalent empty response"
+
+        return None, ""
+
+    @staticmethod
+    def _merge_endpoint_equivalence(rep: Endpoint, dup: Endpoint) -> None:
+        rep.score = max(rep.score, dup.score)
+        if not rep.template and dup.template:
+            rep.template = dup.template
+        if not rep.discovered_by and dup.discovered_by:
+            rep.discovered_by = dup.discovered_by
+        for key, value in (dup.params or {}).items():
+            rep.params.setdefault(key, value)
+        for key, value in (dup.headers or {}).items():
+            rep.headers.setdefault(key, value)
+        if dup.forms:
+            rep.forms.extend([form for form in dup.forms if form not in rep.forms])
+
+    def _collapse_equivalent_endpoints_for_agentic(
+        self,
+        endpoints: List[Endpoint],
+        page_cache: dict,
+    ) -> List[Endpoint]:
+        if not endpoints:
+            return endpoints
+
+        kept: List[Endpoint] = []
+        seen_clusters: Dict[tuple, Endpoint] = {}
+        skipped: List[Tuple[str, str, str]] = []
+
+        for ep in endpoints:
+            resp = page_cache.get(ep.url)
+            if resp is None and ep.method == "GET":
+                resp = self.client.get(ep.url)
+                page_cache[ep.url] = resp
+            if resp is None:
+                kept.append(ep)
+                continue
+
+            key, reason = self._agentic_equivalence_key(ep, resp)
+            if not key:
+                kept.append(ep)
+                continue
+
+            representative = seen_clusters.get(key)
+            if representative is None:
+                seen_clusters[key] = ep
+                kept.append(ep)
+                continue
+
+            self._merge_endpoint_equivalence(representative, ep)
+            skipped.append((ep.url, representative.url, reason))
+
+        if skipped:
+            console.print(
+                f"  [yellow]  Agentic response dedupe: kept {len(kept)}/{len(endpoints)} "
+                f"endpoint(s), skipped {len(skipped)} equivalent response(s)[/yellow]"
+            )
+            for dup_url, rep_url, reason in skipped[:5]:
+                console.print(
+                    f"  [dim]    skip {dup_url} -> same as {rep_url} ({reason})[/dim]"
+                )
+        return kept
+
     def run(self):
         raw = self.args.target.rstrip("/")
         self.ctx.target = raw
@@ -10115,6 +10463,7 @@ class PentestPipeline:
         # ── Step 6: AI Planning ───────────────────────────────────────────────
         console.print(f"\n[cyan]━━ AI PLANNER ━━[/cyan]")
         planned = self.ai.plan_endpoints(enriched)
+        planned = self._collapse_equivalent_endpoints_for_agentic(planned, page_cache)
         console.print(f"[green]✓ AI prioritized {len(planned)} endpoints[/green]")
 
         # ── Step 7: OWASP Fuzzing (Agentic Loop) ─────────────────────────────
