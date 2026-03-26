@@ -118,8 +118,20 @@ BASELINE_REPEATS = 3
 AGENTIC_MAX_ITER = 20      # max iterations in agentic loop per endpoint
 AI_CALL_TIMEOUT_SEC = max(5, int(os.environ.get("AI_CALL_TIMEOUT_SEC", "25")))
 PAGE_ANALYSIS_AI_TIMEOUT_SEC = max(3, int(os.environ.get("PAGE_ANALYSIS_AI_TIMEOUT_SEC", "8")))
+PAGE_ANALYSIS_AI_TIMEOUT_FALLBACK_SEC = max(
+    PAGE_ANALYSIS_AI_TIMEOUT_SEC,
+    int(os.environ.get("PAGE_ANALYSIS_AI_TIMEOUT_FALLBACK_SEC", "12")),
+)
+PAGE_ANALYSIS_MODEL = str(os.environ.get("PAGE_ANALYSIS_MODEL", "")).strip()
+PAGE_ANALYSIS_BODY_CHARS = max(300, int(os.environ.get("PAGE_ANALYSIS_BODY_CHARS", "900")))
 PAGE_ANALYSIS_PROGRESS_EVERY = max(1, int(os.environ.get("PAGE_ANALYSIS_PROGRESS_EVERY", "1")))
-AI_MIN_CALL_INTERVAL_SEC = max(0.3, float(os.environ.get("AI_MIN_CALL_INTERVAL_SEC", "0.8")))
+try:
+    _PAGE_ANALYSIS_PRIORITY_RATIO = float(os.environ.get("PAGE_ANALYSIS_PRIORITY_RATIO", "0.35"))
+except Exception:
+    _PAGE_ANALYSIS_PRIORITY_RATIO = 0.35
+PAGE_ANALYSIS_PRIORITY_RATIO = min(1.0, max(0.05, _PAGE_ANALYSIS_PRIORITY_RATIO))
+PAGE_ANALYSIS_PRIORITY_MIN = max(1, int(os.environ.get("PAGE_ANALYSIS_PRIORITY_MIN", "12")))
+PAGE_ANALYSIS_PRIORITY_MAX = max(PAGE_ANALYSIS_PRIORITY_MIN, int(os.environ.get("PAGE_ANALYSIS_PRIORITY_MAX", "60")))
 DEFAULT_UA       = "Mozilla/5.0 (X11; Linux x86_64) PentestAI/8.0"
 WEB_SAFE_REPORTS = str(os.environ.get("WEB_SAFE_REPORTS", "")).lower() in {"1", "true", "yes", "on"}
 WEB_SAFE_PLACEHOLDER = "[hidden in web-safe report]"
@@ -229,6 +241,10 @@ class Finding:
                 if d.get(key):
                     d[key] = WEB_SAFE_PLACEHOLDER
         return d
+
+
+class AIRequiredError(RuntimeError):
+    """Raised when a required AI verification cannot be completed safely."""
 
 
 TOOL_PURPOSES = {
@@ -1332,6 +1348,11 @@ class HTTPClient:
                 for c in self._jar:
                     self.session.cookies[c.name] = c.value
                 self._429_count = 0
+                if self._rate_delay > 0:
+                    # Successful response: quickly recover from previous throttling
+                    self._rate_delay = max(0.0, self._rate_delay * 0.5)
+                    if self._rate_delay < 0.5:
+                        self._rate_delay = 0.0
                 return {
                     "ok": True, "status": r.status, "url": r.url,
                     "headers": resp_hdrs, "body": resp_body,
@@ -1342,7 +1363,7 @@ class HTTPClient:
             resp_body = e.read(50_000).decode("utf-8", errors="replace") if e.fp else ""
             if e.code == 429:
                 self._429_count += 1
-                delay = min(2 ** self._429_count, 30.0)
+                delay = min(2 ** self._429_count, 8.0)
                 self._rate_delay = max(self._rate_delay, delay)
                 console.print(f"  [dim yellow]  429 — backing off {delay:.0f}s[/dim yellow]")
                 time.sleep(delay)
@@ -1404,9 +1425,53 @@ class RiskScorer:
         "user": 25, "account": 25, "profile": 25,
     }
 
+    _SECRET_KEY_LABELS = {
+        "db_host": "database host",
+        "db_pass": "database password",
+        "database_url": "database URL",
+        "redis_url": "redis URL",
+        "api_key": "API key",
+        "api_secret": "API secret",
+        "secret_key": "secret key",
+        "private_key": "private key",
+        "smtp": "SMTP credential",
+        "smtp_password": "SMTP password",
+        "mail_pass": "mail password",
+        "aws_access": "AWS access key",
+        "aws_access_key_id": "AWS access key",
+        "aws_secret": "AWS secret key",
+        "aws_secret_access_key": "AWS secret key",
+        "jwt_secret": "JWT secret",
+        "jwt_key": "JWT key",
+        "app_secret": "application secret",
+        "connection_string": "connection string",
+        "mongo_uri": "MongoDB URI",
+        "postgres_url": "PostgreSQL URL",
+        "mysql_pwd": "MySQL password",
+        "token": "access token",
+        "bearer": "bearer token",
+    }
+    _CRITICAL_SECRET_KEYS = {
+        "db_pass", "api_secret", "private_key", "aws_secret",
+        "aws_secret_access_key", "jwt_secret", "app_secret",
+    }
+    _NON_SECRET_VALUES = {
+        "", "null", "none", "undefined", "password", "passwd", "credentials",
+        "secret", "token", "api_key", "changeme", "change_me", "example",
+        "sample", "demo", "test", "default", "placeholder", "your_token_here",
+        "xxx", "***", "[redacted]",
+    }
+    _SENSITIVE_PATH_MARKERS = (
+        ".env", "config.", "backup", "manifest", "routes-manifest",
+        "build-manifest", "middleware-manifest", "runtime-config", "secrets",
+        "credentials", "database.yml", "appsettings", "web.config",
+    )
+
     @classmethod
     def score_url(cls, url: str) -> int:
         path  = urllib.parse.urlparse(url).path.lower()
+        if ResponseClassifier.is_static_asset_url(url) and not cls.looks_sensitive_path(path):
+            return 0
 
         # Score by critical path keywords (each keyword has its own weight)
         score = 0
@@ -1431,32 +1496,169 @@ class RiskScorer:
         return min(score, 100)
 
     @classmethod
-    def score_body(cls, body: str) -> List[dict]:
-        findings, body_l = [], body.lower()
-        for key in cls._SENSITIVE_BODY:
-            pat = rf'["\']?{re.escape(key)}["\']?\s*[:=]\s*["\']?([^\s"\'<>{{}}]+)'
-            m   = re.search(pat, body_l)
-            if m:
-                findings.append({
-                    "key":  key,
-                    "value": m.group(1)[:60],
-                    "risk": "Critical" if key in (
-                        "db_pass","api_secret","jwt_secret","private_key","aws_secret"
-                    ) else "High",
-                })
-        return findings
+    def looks_sensitive_path(cls, path: str) -> bool:
+        path_l = str(path or "").lower()
+        return any(marker in path_l for marker in cls._SENSITIVE_PATH_MARKERS)
+
+    @staticmethod
+    def _body_excerpt(body: str, limit: int = 120_000) -> str:
+        return str(body or "")[:limit]
+
+    @staticmethod
+    def _shannon_entropy(value: str) -> float:
+        if not value:
+            return 0.0
+        counts = collections.Counter(value)
+        total = len(value)
+        entropy = 0.0
+        for count in counts.values():
+            p = count / total
+            entropy -= p * math.log2(max(p, 1e-9))
+        return entropy
+
+    @classmethod
+    def _value_looks_secret_like(cls, value: str, key_hint: str = "") -> bool:
+        v = str(value or "").strip().strip("'\"")
+        if not v:
+            return False
+        lower_v = v.lower()
+        if lower_v in cls._NON_SECRET_VALUES:
+            return False
+        if v.startswith(("http://", "https://")) and key_hint not in {
+            "database_url", "redis_url", "connection_string", "mongo_uri", "postgres_url",
+        }:
+            return False
+        if re.fullmatch(r"[a-z_][a-z0-9_]{0,20}", lower_v):
+            return False
+        if len(v) >= 20 and re.search(r"[A-Z]", v) and re.search(r"[a-z]", v) and re.search(r"\d", v):
+            return True
+        if len(v) >= 24 and cls._shannon_entropy(v) >= 3.2:
+            return True
+        if key_hint in {"database_url", "redis_url", "connection_string", "mongo_uri", "postgres_url"}:
+            return re.match(r"(?i)^[a-z][a-z0-9+.-]*://", v) is not None
+        return False
+
+    @staticmethod
+    def _candidate_snippet(body: str, start: int, end: int, radius: int = 80) -> str:
+        lo = max(0, start - radius)
+        hi = min(len(body), end + radius)
+        snippet = body[lo:hi].replace("\n", " ").replace("\r", " ")
+        return re.sub(r"\s+", " ", snippet)[:220]
+
+    @classmethod
+    def _append_candidate(cls, findings: list, seen: Set[str], key: str, label: str,
+                          value: str, risk: str, strong: bool, snippet: str):
+        preview = str(value or "")[:80]
+        fingerprint = hashlib.md5(f"{key}|{preview}".encode("utf-8", errors="ignore")).hexdigest()
+        if fingerprint in seen:
+            return
+        seen.add(fingerprint)
+        findings.append({
+            "key": key,
+            "label": label,
+            "value": preview,
+            "risk": risk,
+            "strong": bool(strong),
+            "snippet": snippet[:220],
+        })
+
+    @classmethod
+    def has_strong_sensitive_candidate(cls, candidates: List[dict]) -> bool:
+        return any(bool(item.get("strong")) for item in candidates or [])
+
+    @classmethod
+    def score_body(cls, body: str, url: str = "", headers: Optional[dict] = None) -> List[dict]:
+        body = cls._body_excerpt(body)
+        if not body:
+            return []
+
+        findings: List[dict] = []
+        seen: Set[str] = set()
+
+        structured_patterns = [
+            (
+                r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{40,}?-----END [A-Z ]*PRIVATE KEY-----",
+                "private_key", "PEM private key", "Critical", True,
+            ),
+            (
+                r"\bAKIA[0-9A-Z]{16}\b",
+                "aws_access", "AWS access key", "Critical", True,
+            ),
+            (
+                r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
+                "jwt_token", "JWT token", "High", True,
+            ),
+            (
+                r"(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|mssql)://[^\s\"'<>]{12,}",
+                "connection_string", "connection string", "Critical", True,
+            ),
+            (
+                r"(?i)\bBearer\s+([A-Za-z0-9._-]{20,})\b",
+                "bearer", "bearer token", "High", True,
+            ),
+        ]
+        for pattern, key, label, risk, strong in structured_patterns:
+            for match in re.finditer(pattern, body):
+                value = match.group(1) if match.lastindex else match.group(0)
+                cls._append_candidate(
+                    findings,
+                    seen,
+                    key=key,
+                    label=label,
+                    value=value,
+                    risk=risk,
+                    strong=strong,
+                    snippet=cls._candidate_snippet(body, match.start(), match.end()),
+                )
+
+        assignment_re = re.compile(
+            r'(?is)["\']?('
+            + "|".join(re.escape(k) for k in sorted(cls._SECRET_KEY_LABELS, key=len, reverse=True))
+            + r')["\']?\s*[:=]\s*["\']?([^\s"\'<>{}]{8,240})'
+        )
+        for match in assignment_re.finditer(body):
+            key = str(match.group(1) or "").lower()
+            raw_value = str(match.group(2) or "").strip().strip(",;")
+            if not cls._value_looks_secret_like(raw_value, key):
+                continue
+            strong = key in cls._CRITICAL_SECRET_KEYS or (
+                len(raw_value) >= 24 and cls._shannon_entropy(raw_value) >= 3.1
+            )
+            risk = "Critical" if strong else "High"
+            cls._append_candidate(
+                findings,
+                seen,
+                key=key,
+                label=cls._SECRET_KEY_LABELS.get(key, key.replace("_", " ")),
+                value=raw_value,
+                risk=risk,
+                strong=strong,
+                snippet=cls._candidate_snippet(body, match.start(), match.end()),
+            )
+
+        return findings[:12]
 
     @classmethod
     def detect_tech(cls, resp: dict) -> dict:
         tech    = {"lang":"unknown","server":"unknown","framework":"unknown","cms":"unknown"}
         headers = resp.get("headers", {})
         body    = resp.get("body", "")[:3000]
+        url     = resp.get("url", "")
+        profile = ResponseClassifier.classify(url, headers, body, resp.get("status", 0))
 
         server     = headers.get("server", headers.get("Server", ""))
         powered_by = headers.get("x-powered-by", headers.get("X-Powered-By", ""))
         body_lower = body.lower()
 
         tech["server"] = server[:40] if server else "unknown"
+
+        path_lower = urllib.parse.urlparse(url).path.lower()
+        if profile.get("verdict") == "static_asset":
+            if any(marker in path_lower for marker in ["/_next/", "/webpack", "/chunks/"]) or any(
+                marker in body_lower for marker in ["__next", "__webpack", "webpack", "next/router"]
+            ):
+                tech["lang"] = "nodejs"
+                tech["framework"] = "nextjs"
 
         if "PHP" in powered_by:          tech["lang"] = "php"
         elif "ASP.NET" in powered_by:    tech["lang"] = "aspnet"
@@ -1519,17 +1721,162 @@ class RiskScorer:
                 tech["lang"] = "python"; tech["framework"] = "django"
 
         # Body dan ham tekshir
-        if tech["lang"] == "unknown":
+        if tech["lang"] == "unknown" and profile.get("verdict") != "static_asset":
             if "werkzeug" in body_lower:
                 tech["lang"] = "python"; tech["framework"] = "flask"
             elif "fastapi" in body_lower or "starlette" in body_lower:
                 tech["lang"] = "python"; tech["framework"] = "fastapi"
             elif "gin-gonic" in body_lower or "fiber" in body_lower:
                 tech["lang"] = "golang"
-            elif "rack" in body_lower and "ruby" not in tech["lang"]:
+            elif "rack" in body_lower and "__next" not in body_lower and "_next" not in body_lower:
                 tech["lang"] = "ruby"; tech["framework"] = "rack"
 
         return tech
+
+
+class ResponseClassifier:
+    _lock = threading.Lock()
+    _cache: dict = {}
+    _STATIC_EXTENSIONS = {
+        ".js", ".mjs", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+        ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".otf", ".avif",
+        ".mp3", ".wav", ".ogg", ".mp4", ".webm",
+    }
+    _STATIC_PATH_MARKERS = (
+        "/_next/static/", "/_next/image", "/static/", "/assets/", "/favicon",
+        "/images/", "/image/", "/img/", "/fonts/", "/css/", "/js/", "/dist/", "/build/",
+    )
+
+    @classmethod
+    def normalize_content_type(cls, headers: Optional[dict]) -> str:
+        headers = headers or {}
+        ct = headers.get("content-type", headers.get("Content-Type", "")) or ""
+        return str(ct).split(";", 1)[0].strip().lower()
+
+    @classmethod
+    def is_static_asset_url(cls, url: str) -> bool:
+        path = urllib.parse.urlparse(str(url or "")).path.lower()
+        if not path:
+            return False
+        if any(marker in path for marker in cls._STATIC_PATH_MARKERS):
+            return True
+        return any(path.endswith(ext) for ext in cls._STATIC_EXTENSIONS)
+
+    @classmethod
+    def is_sensitive_file_target(cls, url: str) -> bool:
+        path = urllib.parse.urlparse(str(url or "")).path.lower()
+        return RiskScorer.looks_sensitive_path(path)
+
+    @staticmethod
+    def _looks_like_html(body_l: str, ct: str) -> bool:
+        return "text/html" in ct or "<html" in body_l or "<body" in body_l or "<head" in body_l
+
+    @staticmethod
+    def _looks_like_json(body: str, ct: str) -> bool:
+        trimmed = body.lstrip()
+        return "json" in ct or trimmed.startswith("{") or trimmed.startswith("[")
+
+    @staticmethod
+    def _looks_like_javascript(body_l: str, ct: str) -> bool:
+        js_markers = [
+            "javascript", "ecmascript", "__webpack", "webpackchunk", "sourceMappingURL",
+            "Object.defineProperty(exports", "function(", "=>{", "export default", "use strict",
+        ]
+        if "javascript" in ct or "ecmascript" in ct:
+            return True
+        return sum(1 for marker in js_markers if marker.lower() in body_l) >= 2
+
+    @staticmethod
+    def _looks_like_css(body_l: str, ct: str) -> bool:
+        if "text/css" in ct:
+            return True
+        css_markers = ["@media", "@font-face", "body{", "body {", ":root", "color:", "margin:"]
+        return sum(1 for marker in css_markers if marker.lower() in body_l) >= 2
+
+    @classmethod
+    def classify(cls, url: str, headers: Optional[dict] = None, body: str = "",
+                 status: int = 0) -> dict:
+        body = str(body or "")
+        ct = cls.normalize_content_type(headers)
+        body_hash = hashlib.md5(body.encode("utf-8", errors="ignore")).hexdigest()
+        cache_key = hashlib.md5(
+            f"{url}|{ct}|{body_hash}".encode("utf-8", errors="ignore")
+        ).hexdigest()
+        with cls._lock:
+            cached = cls._cache.get(cache_key)
+        if cached:
+            return copy.deepcopy(cached)
+
+        path = urllib.parse.urlparse(str(url or "")).path.lower()
+        body_l = body[:6000].lower()
+        verdict = "unknown"
+        reason = "No strong classification signal."
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+        title = title_match.group(1).strip()[:120] if title_match else ""
+
+        if cls.is_static_asset_url(url) or ct.startswith(("image/", "font/", "audio/", "video/")):
+            verdict = "static_asset"
+            reason = "Static URL pattern or static content-type."
+        elif cls._looks_like_javascript(body_l, ct) or cls._looks_like_css(body_l, ct):
+            verdict = "static_asset"
+            reason = "Body signature matches JavaScript/CSS asset."
+        elif status in (401, 403):
+            verdict = "protected_content"
+            reason = "Explicit authorization status."
+        elif cls._looks_like_html(body_l, ct):
+            login_markers = [
+                'type="password"', "name=\"password\"", "autocomplete=\"current-password\"",
+                "sign in", "login", "log in", "forgot password", "remember me",
+            ]
+            if sum(1 for marker in login_markers if marker in body_l) >= 2:
+                verdict = "login_page"
+                reason = "HTML contains multiple login form markers."
+            else:
+                protected_markers = [
+                    "admin panel", "dashboard", "manage users", "user list",
+                    "account settings", "billing", "invoice", "permissions", "roles",
+                    "api keys", "secret key", "configuration", "internal only",
+                ]
+                public_markers = [
+                    "<nav", "<footer", "og:", "twitter:", "telegram", "facebook",
+                    "instagram", "youtube", "__next", "_next/static", "hero",
+                    "copyright", "contact", "admission", "program", "apply now",
+                ]
+                protected_score = sum(1 for marker in protected_markers if marker in body_l)
+                public_score = sum(1 for marker in public_markers if marker in body_l)
+                if protected_score >= 2 and protected_score > public_score:
+                    verdict = "protected_content"
+                    reason = "HTML contains protected/admin content markers."
+                elif public_score >= 2 or path in {"", "/", "/en", "/uz", "/ru"}:
+                    verdict = "public_page"
+                    reason = "HTML looks like a public landing/content page."
+        elif cls._looks_like_json(body, ct):
+            protected_json_markers = [
+                '"email"', '"user_id"', '"account_id"', '"role"', '"permissions"',
+                '"balance"', '"orders"', '"users"', '"token"', '"api_key"',
+            ]
+            if RiskScorer.has_strong_sensitive_candidate(RiskScorer.score_body(body, url=url, headers=headers)):
+                verdict = "protected_content"
+                reason = "JSON contains strong secret-like material."
+            elif any(marker in body_l for marker in protected_json_markers):
+                verdict = "data_response"
+                reason = "JSON response contains structured account/data fields."
+            else:
+                verdict = "data_response"
+                reason = "Structured JSON/API response."
+
+        result = {
+            "verdict": verdict,
+            "reason": reason,
+            "content_type": ct or "unknown",
+            "status": int(status or 0),
+            "body_hash": body_hash,
+            "title": title,
+            "url": url,
+        }
+        with cls._lock:
+            cls._cache[cache_key] = copy.deepcopy(result)
+        return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1726,9 +2073,10 @@ class AIEngine:
 
     def __init__(self):
         self._cache:         dict = {}
+        self._sensitive_verdict_cache: dict = {}
+        self._access_verdict_cache: dict = {}
         self._client              = None
         self._lock                = threading.Lock()
-        self._last_call:    float = 0.0
         self._call_count:   int   = 0
         self._error_count:  int   = 0
 
@@ -1742,14 +2090,51 @@ class AIEngine:
     def _clean(text: str, max_chars: int = 2000) -> str:
         return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text[:max_chars])
 
-    def _chat_text(self, messages: List[dict], timeout_sec: Optional[float] = None) -> str:
+    def _chat_text(
+        self,
+        messages: List[dict],
+        timeout_sec: Optional[float] = None,
+        model_override: Optional[str] = None,
+        options: Optional[dict] = None,
+    ) -> str:
         """
-        Send chat request to Ollama client.
-        (Kept on ollama client path to avoid aggressive HTTP 429 bursts)
+        Send chat request to Ollama HTTP API with real timeout enforcement.
         """
-        model = resolve_model_name(MODEL_NAME)
-        client = self._get_client()
-        resp = client.chat(model=model, messages=messages)
+        model = resolve_model_name(model_override or MODEL_NAME)
+        timeout = float(timeout_sec if timeout_sec and timeout_sec > 0 else AI_CALL_TIMEOUT_SEC)
+        chat_url = urllib.parse.urljoin(OLLAMA_HOST.rstrip("/") + "/", "api/chat")
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        if options:
+            payload["options"] = dict(options)
+        req = urllib.request.Request(
+            chat_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")[:220]
+            except Exception:
+                pass
+            if int(getattr(e, "code", 0) or 0) == 429:
+                raise RuntimeError(f"429 Too Many Requests for url: {chat_url}")
+            raise RuntimeError(f"Ollama HTTP {getattr(e, 'code', '?')}: {err_body or str(e)}")
+        except Exception as e:
+            emsg = str(e).lower()
+            if "timeout" in emsg or "timed out" in emsg:
+                raise TimeoutError(f"AI timeout after {timeout:.1f}s")
+            raise
+
+        resp = json.loads(raw)
         msg = resp.get("message", {}).get("content")
         if not isinstance(msg, str):
             raise ValueError("Invalid Ollama response format")
@@ -1803,23 +2188,19 @@ class AIEngine:
         if cache and key in self._cache:
             return self._cache[key]
 
-        with self._lock:
-            elapsed = time.time() - self._last_call
-            if elapsed < AI_MIN_CALL_INTERVAL_SEC:
-                time.sleep(AI_MIN_CALL_INTERVAL_SEC - elapsed)
-            self._last_call = time.time()
-
         last_err = None
         retries = max(1, int(retries))
         for attempt in range(retries):
             try:
-                raw = self._chat_text(
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": prompt},
-                    ],
-                    timeout_sec=timeout_sec,
-                )
+                # Single-flight AI access: prevents parallel bursts that trigger Ollama 429.
+                with self._lock:
+                    raw = self._chat_text(
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user",   "content": prompt},
+                        ],
+                        timeout_sec=timeout_sec,
+                    )
                 parsed = self._extract_json_payload(raw, expect_list=expect_list)
                 if parsed is not None:
                     if expect_list:
@@ -1839,22 +2220,42 @@ class AIEngine:
                 last_err = e
                 self._error_count += 1
                 emsg = str(e).lower()
-                if ("429" in emsg or "too many requests" in emsg) and attempt < (retries - 1):
-                    backoff = min(30, 3 * (attempt + 1))
-                    console.print(f"[dim yellow]  AI rate-limited (429), retrying in {backoff}s...[/dim yellow]")
-                    time.sleep(backoff)
-                    continue
+                if ("429" in emsg or "too many requests" in emsg):
+                    if attempt < (retries - 1):
+                        self._client = None
+                        time.sleep(min(1.0 * (attempt + 1), 3.0))
+                        continue
+                    console.print("[dim yellow]  AI busy (429), skipped this AI check and continued.[/dim yellow]")
+                    return None
                 if ("500" in emsg or "timeout" in emsg or "timed out" in emsg) and attempt < (retries - 1):
                     self._client = None
-                    time.sleep(4 * (attempt + 1))
+                    time.sleep(min(1.0 * (attempt + 1), 3.0))
                     continue
                 if attempt < (retries - 1):
-                    time.sleep(1.2 * (attempt + 1))
+                    time.sleep(min(0.5 * (attempt + 1), 1.5))
                     continue
                 break
         if last_err:
             console.print(f"[dim red]  AI error: {str(last_err)}[/dim red]")
         return None
+
+    def _call_required(self, prompt: str, *, purpose: str,
+                       cache: bool = True, expect_list: bool = False,
+                       timeout_sec: Optional[float] = None,
+                       retries: int = 4) -> Any:
+        result = self._call(
+            prompt,
+            cache=cache,
+            expect_list=expect_list,
+            timeout_sec=timeout_sec,
+            retries=retries,
+        )
+        if result is None:
+            model = active_model_name() or MODEL_NAME
+            raise AIRequiredError(
+                f"AI required for {purpose}, but model '{model}' did not recover after retry."
+            )
+        return result
 
     # ── Dynamic Payload Generation ────────────────────────────────────────────
     def generate_payloads(self, vuln_type: str, context: dict) -> List[str]:
@@ -2210,13 +2611,14 @@ Return JSON: {{
         title = re.search(r'<title[^>]*>(.*?)</title>', body, re.I|re.S)
         title = title.group(1).strip() if title else ""
         sens  = RiskScorer.score_body(body)
+        body_preview = self._clean(body, PAGE_ANALYSIS_BODY_CHARS)
         prompt = f"""Analyze this HTTP response for security testing.
 URL: {url}
 Status: {status}
 Title: {title}
 Body size: {len(body)}
 Sensitive data found: {json.dumps(sens)}
-Body (first 1500): {self._clean(body, 1500)}
+Body (first {PAGE_ANALYSIS_BODY_CHARS}): {body_preview}
 
 Return JSON: {{
   "is_real_page": true,
@@ -2373,7 +2775,13 @@ Return JSON: {{
 
     # ── FP Filter ─────────────────────────────────────────────────────────────
     def fp_filter(self, f: "Finding") -> dict:
-        is_bac = f.owasp_id == "A01" or "403" in f.title or "bypass" in f.title.lower()
+        title_l = f.title.lower()
+        is_bac = (
+            f.owasp_id == "A01" or
+            "403" in f.title or
+            "bypass" in title_l or
+            "no auth required" in title_l
+        )
         bac_rules = """
 EXTRA BAC RULES:
 - CSS/JS body → is_fp=true (static assets)
@@ -2405,11 +2813,139 @@ RULES:
 - Real evidence of vulnerability → is_fp=false
 
 Return JSON: {{"is_fp": false, "reason": "specific reason", "adjusted_confidence": 75}}"""
-        return self._call(prompt, cache=False) or {
+        return self._call(prompt, cache=True) or {
             "is_fp": False, "reason": "", "adjusted_confidence": f.confidence
         }
 
     # ── Login Fields ──────────────────────────────────────────────────────────
+    def verify_sensitive_candidates(self, url: str, headers: dict, body: str,
+                                    response_profile: dict,
+                                    candidates: List[dict]) -> dict:
+        normalized = [
+            {
+                "key": c.get("key", ""),
+                "label": c.get("label", ""),
+                "value": c.get("value", "")[:80],
+                "risk": c.get("risk", "High"),
+                "strong": bool(c.get("strong")),
+                "snippet": c.get("snippet", "")[:180],
+            }
+            for c in (candidates or [])[:6]
+        ]
+        cache_key = hashlib.md5(
+            json.dumps(normalized, sort_keys=True).encode("utf-8", errors="ignore")
+        ).hexdigest()
+        cached = self._sensitive_verdict_cache.get(cache_key)
+        if cached:
+            return copy.deepcopy(cached)
+
+        ct = ResponseClassifier.normalize_content_type(headers)
+        prompt = f"""Determine whether these extracted response candidates are REAL sensitive secrets exposed to the client.
+
+URL: {url}
+Response class: {response_profile.get('verdict', 'unknown')}
+Content-Type: {ct or 'unknown'}
+Candidates: {json.dumps(normalized, ensure_ascii=False)}
+
+Rules:
+- Keywords alone are NOT secrets.
+- Frontend labels, placeholders, docs, examples, or enum keys are NOT secrets.
+- A real finding requires an actual credential/token/key/DSN/PEM/JWT-like value.
+- Be strict with JavaScript/CSS/public page content.
+
+Return JSON: {{
+  "is_sensitive": false,
+  "confidence": 0,
+  "risk": "Info|Low|Medium|High|Critical",
+  "reason": "short technical reason",
+  "evidence": "short proof",
+  "confirmed": false,
+  "confirmed_candidates": []
+}}"""
+        result = self._call_required(
+            prompt,
+            purpose="sensitive data verification",
+            cache=True,
+            timeout_sec=min(AI_CALL_TIMEOUT_SEC, 12),
+            retries=4,
+        )
+        verified = self._validate(result)
+        self._sensitive_verdict_cache[cache_key] = copy.deepcopy(verified)
+        return verified
+
+    def verify_access_exposure(self, vector: str, url: str, method: str,
+                               baseline: dict, candidate: dict,
+                               baseline_profile: dict, candidate_profile: dict,
+                               sensitive_candidates: List[dict]) -> dict:
+        normalized_candidates = [
+            {
+                "label": c.get("label", ""),
+                "value": c.get("value", "")[:60],
+                "strong": bool(c.get("strong")),
+            }
+            for c in (sensitive_candidates or [])[:5]
+        ]
+        cache_key = hashlib.md5(
+            json.dumps(
+                {
+                    "vector": vector,
+                    "url": url,
+                    "method": method,
+                    "baseline_hash": hashlib.md5(str(baseline.get("body", "")).encode()).hexdigest(),
+                    "candidate_hash": hashlib.md5(str(candidate.get("body", "")).encode()).hexdigest(),
+                    "baseline_status": baseline.get("status", 0),
+                    "candidate_status": candidate.get("status", 0),
+                    "candidate_profile": candidate_profile.get("verdict", "unknown"),
+                    "sensitive": normalized_candidates,
+                },
+                sort_keys=True,
+            ).encode("utf-8", errors="ignore")
+        ).hexdigest()
+        cached = self._access_verdict_cache.get(cache_key)
+        if cached:
+            return copy.deepcopy(cached)
+
+        prompt = f"""Decide whether this mutation demonstrates REAL unauthorized access.
+
+Vector: {vector}
+Method: {method}
+URL: {url}
+Baseline status: {baseline.get('status', 0)}
+Candidate status: {candidate.get('status', 0)}
+Baseline class: {baseline_profile.get('verdict', 'unknown')}
+Candidate class: {candidate_profile.get('verdict', 'unknown')}
+Sensitive candidates: {json.dumps(normalized_candidates, ensure_ascii=False)}
+
+Baseline preview:
+{self._clean(str(baseline.get('body', '')), 700)}
+
+Candidate preview:
+{self._clean(str(candidate.get('body', '')), 900)}
+
+Rules:
+- Public page, static asset, login page, or same public content => false.
+- A real finding requires protected/admin/account/config/secret data or a clearly unauthorized privileged view.
+- Be strict. If unclear, return false.
+
+Return JSON: {{
+  "is_real": false,
+  "confidence": 0,
+  "risk": "Info|Low|Medium|High|Critical",
+  "reason": "short technical reason",
+  "evidence": "short proof",
+  "confirmed": false
+}}"""
+        result = self._call_required(
+            prompt,
+            purpose=f"{vector.lower()} verification",
+            cache=True,
+            timeout_sec=min(AI_CALL_TIMEOUT_SEC, 12),
+            retries=4,
+        )
+        verified = self._validate(result)
+        self._access_verdict_cache[cache_key] = copy.deepcopy(verified)
+        return verified
+
     def identify_login_fields(self, html_body: str, url: str) -> dict:
         prompt = f"""Identify login form field names.
 URL: {url}
@@ -3804,8 +4340,42 @@ class EndpointIntelligence:
             if not k.startswith("header:") and not k.startswith("cookie:"):
                 clean_params[clean_name] = str(v)[:50]
 
+        risk_params = {}
+        param_hints = []
+        for pname, pval in clean_params.items():
+            if pname in cls.PARAM_SEMANTICS:
+                semantic, tests = cls.PARAM_SEMANTICS[pname]
+                risk_params[pname] = {"semantic": semantic, "tests": tests, "value": pval[:20]}
+                param_hints.append(f"'{pname}'={pval[:15]!r} -> {semantic} ({tests})")
+            else:
+                try:
+                    int(pval)
+                    risk_params[pname] = {"semantic": "numeric_id", "tests": "idor,sqli", "value": pval[:20]}
+                    param_hints.append(f"'{pname}'={pval[:10]!r} -> numeric -> idor,sqli")
+                except ValueError:
+                    if len(pval) > 3:
+                        risk_params[pname] = {"semantic": "text_input", "tests": "sqli,xss,ssti", "value": pval[:20]}
+                        param_hints.append(f"'{pname}'={pval[:10]!r} -> text -> sqli,xss")
+
+        file_surface = any(pn in clean_params for pn in cls.ENDPOINT_RULES["FILE_PATH"]["param_signals"])
+        sensitive_file_target = ResponseClassifier.is_sensitive_file_target(url)
+        if ResponseClassifier.is_static_asset_url(url) and not file_surface and not sensitive_file_target:
+            return {
+                "endpoint_type": "STATIC_ASSET",
+                "all_types": ["STATIC_ASSET"],
+                "priority_tests": [],
+                "risk_params": risk_params,
+                "context_hint": "Public/static browser asset — do not promote to FILE_PATH or auth-sensitive surface.",
+                "param_analysis": "\n".join(param_hints) if param_hints else "No recognized params",
+                "risk_level": "INFO",
+                "response_hints": ["Static/public asset hard-negative rule applied"],
+                "clean_params": clean_params,
+            }
+
         detected_types = []
         for ep_type, config in cls.ENDPOINT_RULES.items():
+            if ep_type == "FILE_PATH" and ResponseClassifier.is_static_asset_url(url) and not file_surface and not sensitive_file_target:
+                continue
             url_match = any(sig in url_lower or sig in path_lower for sig in config["url_signals"])
             param_match = any(pn in clean_params for pn in config["param_signals"])
             if ep_type == "ID_BASED" and not url_match:
@@ -3825,23 +4395,6 @@ class EndpointIntelligence:
             for t in extra_config["priority_tests"]:
                 if t not in priority_tests:
                     priority_tests.append(t)
-
-        risk_params = {}
-        param_hints = []
-        for pname, pval in clean_params.items():
-            if pname in cls.PARAM_SEMANTICS:
-                semantic, tests = cls.PARAM_SEMANTICS[pname]
-                risk_params[pname] = {"semantic": semantic, "tests": tests, "value": pval[:20]}
-                param_hints.append(f"'{pname}'={pval[:15]!r} -> {semantic} ({tests})")
-            else:
-                try:
-                    int(pval)
-                    risk_params[pname] = {"semantic": "numeric_id", "tests": "idor,sqli", "value": pval[:20]}
-                    param_hints.append(f"'{pname}'={pval[:10]!r} -> numeric -> idor,sqli")
-                except ValueError:
-                    if len(pval) > 3:
-                        risk_params[pname] = {"semantic": "text_input", "tests": "sqli,xss,ssti", "value": pval[:20]}
-                        param_hints.append(f"'{pname}'={pval[:10]!r} -> text -> sqli,xss")
 
         risk_level = "HIGH"
         if primary_name in ("COMMAND", "FILE_PATH", "AUTH", "ADMIN", "PAYMENT"):
@@ -5719,80 +6272,274 @@ class OWASPFuzzEngine:
         return []
 
     # ── A05: Default Credentials ──────────────────────────────────────────────
-    def _default_creds(self, ep: Endpoint) -> List[Finding]:
-        """Tech-specific default credentials test."""
-        if not any(x in ep.url.lower() for x in ["/login","/signin","/admin","/auth"]):
-            return []
-        tech  = self.ctx.site_tech
-        creds = [
-            ("admin",    "admin"),
-            ("admin",    "password"),
-            ("admin",    "admin123"),
-            ("admin",    "123456"),
-            ("admin",    ""),
-            ("root",     "root"),
-            ("root",     "toor"),
-            ("guest",    "guest"),
-            ("test",     "test"),
-            ("admin",    "password123"),
+    def _mini_credential_pairs(self, tech: dict) -> List[Tuple[str, str]]:
+        """Small built-in credential spray for admin/login pages only."""
+        tech = tech or {}
+        framework = str(tech.get("framework") or "").lower()
+        cms = str(tech.get("cms") or "").lower()
+        seeded: List[Tuple[str, str]] = []
+        if framework == "django":
+            seeded.append(("admin", "admin"))
+        if framework == "spring":
+            seeded.append(("user", "user"))
+        if cms == "wordpress":
+            seeded.append(("admin", "admin"))
+        pairs = seeded + [
+            ("admin", "admin"),
+            ("admin", "admin123"),
+            ("admin", "password"),
+            ("admin", "password123"),
+            ("root", "root"),
+            ("root", "toor"),
+            ("user", "user"),
+            ("user", "user123"),
+            ("test", "test"),
+            ("default", "default"),
+            ("guest", "guest"),
+            ("administrator", "administrator"),
         ]
-        # Tech-specific creds
-        if tech.get("framework") == "django":
-            creds = [("admin","admin"),("admin","password")] + creds
-        if tech.get("cms") == "wordpress":
-            creds = [("admin","admin"),("admin","wordpress"),("wordpress","wordpress")] + creds
-        if tech.get("framework") == "spring":
-            creds = [("admin","admin"),("user","user"),("admin","password")] + creds
+        deduped: List[Tuple[str, str]] = []
+        seen: Set[Tuple[str, str]] = set()
+        for pair in pairs:
+            if pair in seen:
+                continue
+            seen.add(pair)
+            deduped.append(pair)
+            if len(deduped) >= 12:
+                break
+        return deduped
 
-        for username, password in creds[:12]:
-            # Try form POST
-            r = self.client.post(ep.url, data={"username":username,"password":password})
-            body = r.get("body","").lower()
+    def _extract_login_csrf(self, body: str) -> str:
+        for pattern in [
+            r'<input[^>]+name=["\'](?:csrf[_-]?token|_token|csrfmiddlewaretoken|authenticity_token)["\'][^>]+value=["\']([^"\']+)["\']',
+            r'<meta[^>]+name=["\']csrf-token["\'][^>]+content=["\']([^"\']+)["\']',
+            r'"csrf_?[Tt]oken"\s*:\s*"([^"]+)"',
+        ]:
+            match = re.search(pattern, body or "", re.I)
+            if match:
+                return html_mod.unescape(match.group(1))
+        return ""
 
-            # Also try HTTP Basic Auth
-            import base64 as _b64
-            basic = _b64.b64encode(f"{username}:{password}".encode()).decode()
-            r_basic = self.client.get(ep.url, extra_headers={"Authorization": f"Basic {basic}"})
-            if r_basic.get("status") == 200:
-                r = r_basic
-                body = r.get("body","").lower()
-            # Login success indicators
-            if r.get("status") in (301,302):
-                loc = r.get("headers",{}).get("location","").lower()
-                if not any(x in loc for x in ["/login","/signin","/error"]):
-                    return [Finding(
-                        owasp_id="A07", owasp_name="Authentication Failures",
-                        title=f"Default Credentials: {username}/{password} on {ep.url}",
-                        risk="Critical", confidence=95,
-                        url=ep.url, method="POST", param="username/password",
-                        payload=f"{username}:{password}",
-                        evidence=f"Login succeeded with {username}/{password} → redirect to {loc}",
-                        baseline_diff="login_success",
-                        tool_output=f"Location: {loc}",
-                        request_raw=f"POST {ep.url}\nusername={username}&password={password}",
-                        response_raw=f"Status: {r['status']}, Location: {loc}",
-                        exploit_cmd=f"curl -X POST -d 'username={username}&password={password}' -L '{ep.url}'",
-                        remediation="Change all default credentials immediately.",
-                        confirmed=True, tool="default_creds",
-                    )]
-            elif r.get("status") == 200:
-                if any(s in body for s in ["dashboard","welcome","logout","profile",username]):
-                    if not any(s in body for s in ["invalid","failed","wrong","error","incorrect"]):
-                        return [Finding(
-                            owasp_id="A07", owasp_name="Authentication Failures",
-                            title=f"Default Credentials: {username}/{password} on {ep.url}",
-                            risk="Critical", confidence=92,
-                            url=ep.url, method="POST", param="username/password",
-                            payload=f"{username}:{password}",
-                            evidence=f"Login succeeded: body contains dashboard/welcome",
-                            baseline_diff="login_success",
-                            tool_output=body[:300],
-                            request_raw=f"POST {ep.url}\nusername={username}&password={password}",
-                            response_raw=body[:300],
-                            exploit_cmd=f"curl -X POST -d 'username={username}&password={password}' '{ep.url}'",
-                            remediation="Change all default credentials immediately.",
-                            confirmed=True, tool="default_creds",
-                        )]
+    def _discover_login_form(self, html_body: str, url: str) -> dict:
+        body = html_body or ""
+        forms = re.findall(r"(<form\b[^>]*>.*?</form>)", body, re.I | re.S)
+        candidates = forms or [body]
+        for form_html in candidates:
+            input_tags = re.findall(r"(<input\b[^>]*>)", form_html, re.I | re.S)
+            if not input_tags:
+                continue
+            username_field = ""
+            password_field = ""
+            csrf_field = ""
+            hidden_fields: Dict[str, str] = {}
+            action_match = re.search(r"<form\b[^>]*action=[\"']([^\"']+)[\"']", form_html, re.I | re.S)
+            action_url = urllib.parse.urljoin(url, action_match.group(1)) if action_match else url
+            for tag in input_tags:
+                name_match = re.search(r"\bname=[\"']([^\"']+)[\"']", tag, re.I)
+                if not name_match:
+                    continue
+                name = html_mod.unescape(name_match.group(1))
+                value_match = re.search(r"\bvalue=[\"']([^\"']*)[\"']", tag, re.I | re.S)
+                value = html_mod.unescape(value_match.group(1)) if value_match else ""
+                type_match = re.search(r"\btype=[\"']([^\"']+)[\"']", tag, re.I)
+                input_type = (type_match.group(1).lower() if type_match else "text").strip()
+                if input_type == "password" or re.search(r"(?:pass|passwd|pwd)", name, re.I):
+                    password_field = password_field or name
+                    continue
+                if input_type in {"text", "email", "tel"} or re.search(r"(?:user|email|login)", name, re.I):
+                    if not username_field and not re.search(r"(?:csrf|token)", name, re.I):
+                        username_field = name
+                if input_type == "hidden":
+                    hidden_fields[name] = value
+                    if re.search(r"(?:csrf|token|authenticity)", name, re.I):
+                        csrf_field = csrf_field or name
+            if password_field and username_field:
+                csrf_value = self._extract_login_csrf(form_html)
+                if csrf_field and csrf_value and not hidden_fields.get(csrf_field):
+                    hidden_fields[csrf_field] = csrf_value
+                return {
+                    "username_field": username_field,
+                    "password_field": password_field,
+                    "csrf_field": csrf_field or "csrf_token",
+                    "action_url": action_url,
+                    "hidden_fields": hidden_fields,
+                }
+
+        fmap = self.ai.identify_login_fields(body[:4000], url) if self.ai else {}
+        csrf_field = fmap.get("csrf_field", "csrf_token")
+        hidden_fields: Dict[str, str] = {}
+        csrf_value = self._extract_login_csrf(body)
+        if csrf_value and csrf_field:
+            hidden_fields[csrf_field] = csrf_value
+        return {
+            "username_field": fmap.get("username_field", "username"),
+            "password_field": fmap.get("password_field", "password"),
+            "csrf_field": csrf_field,
+            "action_url": urllib.parse.urljoin(url, fmap.get("action_url") or url),
+            "hidden_fields": hidden_fields,
+        }
+
+    def _response_signature(self, response: dict) -> Tuple[int, str, str]:
+        body = str(response.get("body", ""))
+        return (
+            int(response.get("status", 0) or 0),
+            str(response.get("url") or ""),
+            hashlib.md5(body.encode("utf-8", errors="replace")).hexdigest(),
+        )
+
+    def _default_login_succeeded(
+        self,
+        response: dict,
+        username: str,
+        login_url: str,
+        baseline: Optional[dict] = None,
+    ) -> Tuple[bool, str]:
+        if not response or response.get("status", 0) == 0:
+            return False, "request failed"
+        if baseline and self._response_signature(response) == self._response_signature(baseline):
+            return False, "same as anonymous baseline"
+
+        status = int(response.get("status", 0) or 0)
+        final_url = str(response.get("url") or login_url)
+        final_url_l = final_url.lower()
+        body = str(response.get("body", ""))
+        body_l = body.lower()
+        username_l = username.lower()
+
+        failure_markers = [
+            "invalid", "failed", "wrong password", "incorrect", "unauthorized",
+            "access denied", "login failed", "invalid credentials", "try again",
+        ]
+        success_markers = [
+            "logout", "log out", "sign out", "dashboard", "welcome",
+            "my account", "profile", "admin panel", "control panel",
+            "manage users", "account settings",
+        ]
+        login_markers = [
+            "type=\"password\"", "type='password'", "name=\"password\"",
+            "name='password'", "forgot password", "sign in", "log in",
+        ]
+
+        if any(marker in body_l for marker in failure_markers):
+            return False, "failure marker in response body"
+
+        if status in (301, 302, 303, 307, 308):
+            location = str(response.get("headers", {}).get("location", ""))
+            if location and not any(x in location.lower() for x in ["/login", "/signin", "/auth", "/error"]):
+                return True, f"redirected to {location}"
+
+        moved_away = (
+            final_url.rstrip("/").lower() != login_url.rstrip("/").lower()
+            and not any(x in final_url_l for x in ["/login", "/signin", "/auth"])
+        )
+        if moved_away and status in (200, 201, 204):
+            return True, f"landed on {final_url}"
+
+        has_success_marker = any(marker in body_l for marker in success_markers)
+        has_identity_marker = username_l and username_l in body_l and any(
+            marker in body_l for marker in ["logout", "profile", "dashboard", "welcome", "account"]
+        )
+        still_login_like = any(marker in body_l for marker in login_markers)
+        if status in (200, 201, 204) and (has_success_marker or has_identity_marker) and not still_login_like:
+            return True, "post-login markers in response body"
+
+        return False, "no reliable login success indicator"
+
+    def _attempt_default_form_login(
+        self,
+        login_url: str,
+        username: str,
+        password: str,
+        form_spec: Optional[dict] = None,
+    ) -> Tuple[dict, dict]:
+        session = SessionContext()
+        client = HTTPClient(session)
+        probe = client.get(login_url)
+        if probe.get("status", 0) == 0:
+            return probe, {"action_url": login_url, "payload": {}}
+
+        active_url = str(probe.get("url") or login_url)
+        spec = form_spec or self._discover_login_form(probe.get("body", ""), active_url)
+        payload = dict(spec.get("hidden_fields") or {})
+        csrf_field = spec.get("csrf_field") or "csrf_token"
+        csrf_value = self._extract_login_csrf(probe.get("body", ""))
+        if csrf_value and csrf_field and not payload.get(csrf_field):
+            payload[csrf_field] = csrf_value
+        payload[spec.get("username_field") or "username"] = username
+        payload[spec.get("password_field") or "password"] = password
+        action_url = urllib.parse.urljoin(active_url, spec.get("action_url") or active_url)
+        response = client.post(action_url, data=payload)
+        return response, {"action_url": action_url, "payload": payload}
+
+    def _default_creds(self, ep: Endpoint) -> List[Finding]:
+        """Small built-in credential spray for admin/login pages."""
+        if not any(x in ep.url.lower() for x in ["/login", "/signin", "/admin", "/auth"]):
+            return []
+
+        tech = self.ctx.site_tech or {}
+        creds = self._mini_credential_pairs(tech)
+        anonymous_probe = HTTPClient(SessionContext()).get(ep.url)
+        form_spec = self._discover_login_form(
+            anonymous_probe.get("body", ""),
+            str(anonymous_probe.get("url") or ep.url),
+        )
+
+        for username, password in creds:
+            payload_tag = f"{username}:{password}"
+            if self.ctx.already_tested(ep.url, "POST", "default_creds", payload_tag):
+                continue
+
+            form_response, form_meta = self._attempt_default_form_login(
+                ep.url, username, password, form_spec=form_spec
+            )
+            form_ok, form_reason = self._default_login_succeeded(
+                form_response, username, ep.url, baseline=anonymous_probe
+            )
+            if form_ok:
+                action_url = form_meta.get("action_url", ep.url)
+                encoded_payload = urllib.parse.urlencode(form_meta.get("payload", {}))
+                return [Finding(
+                    owasp_id="A07", owasp_name="Authentication Failures",
+                    title=f"Default Credentials: {username}/{password} on {ep.url}",
+                    risk="Critical", confidence=95,
+                    url=ep.url, method="POST", param="username/password",
+                    payload=payload_tag,
+                    evidence=f"Mini credential spray succeeded via login form: {form_reason}",
+                    baseline_diff="login_success",
+                    tool_output=f"Action URL: {action_url}\nFinal URL: {form_response.get('url', ep.url)}",
+                    request_raw=f"POST {action_url}\n{encoded_payload}",
+                    response_raw=form_response.get("body", "")[:300],
+                    exploit_cmd=f"curl -X POST -d '{encoded_payload}' '{action_url}'",
+                    remediation="Change all default credentials immediately.",
+                    confirmed=True, tool="default_creds",
+                )]
+
+            basic_session = SessionContext()
+            basic_client = HTTPClient(basic_session)
+            basic = base64.b64encode(f"{username}:{password}".encode()).decode()
+            basic_response = basic_client.get(
+                ep.url,
+                extra_headers={"Authorization": f"Basic {basic}"},
+            )
+            basic_ok, basic_reason = self._default_login_succeeded(
+                basic_response, username, ep.url, baseline=anonymous_probe
+            )
+            if basic_ok:
+                return [Finding(
+                    owasp_id="A07", owasp_name="Authentication Failures",
+                    title=f"Default Credentials: {username}/{password} on {ep.url}",
+                    risk="Critical", confidence=94,
+                    url=ep.url, method="GET", param="Authorization",
+                    payload=payload_tag,
+                    evidence=f"Mini credential spray succeeded via HTTP Basic auth: {basic_reason}",
+                    baseline_diff="login_success",
+                    tool_output=f"Final URL: {basic_response.get('url', ep.url)}",
+                    request_raw=f"GET {ep.url}\nAuthorization: Basic {basic}",
+                    response_raw=basic_response.get("body", "")[:300],
+                    exploit_cmd=f"curl -H 'Authorization: Basic {basic}' '{ep.url}'",
+                    remediation="Change all default credentials immediately.",
+                    confirmed=True, tool="default_creds",
+                )]
         return []
 
     # ── A05: Debug Mode Detection ─────────────────────────────────────────────
@@ -6290,6 +7037,8 @@ class RequestInterceptor:
             try:
                 found = self._replay(ep)
                 findings.extend(found)
+            except AIRequiredError:
+                raise
             except Exception as ex:
                 console.print(f"  [dim red]  Repeater error: {ex}[/dim red]")
 
@@ -6507,6 +7256,71 @@ Return JSON with ALL relevant mutations:
 
         return mutations
 
+    @staticmethod
+    def _body_hash(body: str) -> str:
+        return hashlib.md5(str(body or "").encode("utf-8", errors="ignore")).hexdigest()
+
+    def _response_profile(self, url: str, resp: dict) -> dict:
+        return ResponseClassifier.classify(
+            url,
+            resp.get("headers", {}),
+            resp.get("body", ""),
+            resp.get("status", 0),
+        )
+
+    def _material_response_change(self, baseline: dict, candidate: dict) -> bool:
+        b_body = baseline.get("body", "")
+        c_body = candidate.get("body", "")
+        size_diff = abs(len(c_body) - len(b_body))
+        return (
+            baseline.get("status", 0) != candidate.get("status", 0) or
+            self._body_hash(b_body) != self._body_hash(c_body) or
+            size_diff > 120
+        )
+
+    def _access_candidate_context(self, baseline_url: str, baseline: dict,
+                                  candidate_url: str, candidate: dict) -> dict:
+        candidate_sens = RiskScorer.score_body(
+            candidate.get("body", ""),
+            url=candidate_url,
+            headers=candidate.get("headers", {}),
+        )
+        return {
+            "baseline_profile": self._response_profile(baseline_url, baseline),
+            "candidate_profile": self._response_profile(candidate_url, candidate),
+            "sensitive_candidates": candidate_sens,
+            "strong_sensitive": RiskScorer.has_strong_sensitive_candidate(candidate_sens),
+            "diff": self._material_response_change(baseline, candidate),
+        }
+
+    @staticmethod
+    def _response_is_publicish(profile: dict) -> bool:
+        return profile.get("verdict") in {"static_asset", "public_page", "login_page"}
+
+    def _confirm_access_candidate(self, vector: str, url: str, method: str,
+                                  baseline: dict, candidate: dict,
+                                  ctx: dict) -> Optional[dict]:
+        candidate_profile = ctx["candidate_profile"]
+        if self._response_is_publicish(candidate_profile):
+            return None
+        if not ctx["diff"] and not ctx["strong_sensitive"]:
+            return None
+        if candidate_profile.get("verdict") not in {"data_response", "protected_content"} and not ctx["strong_sensitive"]:
+            return None
+        result = self.ai.verify_access_exposure(
+            vector=vector,
+            url=url,
+            method=method,
+            baseline=baseline,
+            candidate=candidate,
+            baseline_profile=ctx["baseline_profile"],
+            candidate_profile=candidate_profile,
+            sensitive_candidates=ctx["sensitive_candidates"],
+        )
+        if not result.get("is_real") or result.get("confidence", 0) < max(MIN_CONFIDENCE, 70):
+            return None
+        return result
+
     # ── Execute one mutation ──────────────────────────────────────────────────
     def _execute_mutation(self, mut: dict, ep: "Endpoint",
                           baseline: dict) -> Optional["Finding"]:
@@ -6574,10 +7388,41 @@ Return JSON with ALL relevant mutations:
 
         # ── Finding detection logic ───────────────────────────────────────────
         finding = None
+        had_auth_context = bool(orig_jwt or orig_cookies)
 
         if mut_type == "AUTH_REMOVE":
+            if had_auth_context and m_status in (200, 201) and len(m_body) > 80:
+                ctx = self._access_candidate_context(ep.url, baseline, url, resp)
+                if not self._response_is_publicish(ctx["baseline_profile"]) and (ctx["diff"] or ctx["strong_sensitive"]):
+                    ai_verdict = self._confirm_access_candidate("AUTH_REMOVE", url, method, baseline, resp, ctx)
+                    if ai_verdict:
+                        sens = ctx["sensitive_candidates"]
+                        ev = (
+                            ai_verdict.get("evidence")
+                            or f"Unauthenticated access changed response: status {b_status}->{m_status}"
+                        )
+                        if sens:
+                            ev += f"; candidates={ [s['label'] for s in sens[:3]] }"
+                        finding = self._make_finding(
+                            owasp_id="A07", owasp_name="Authentication Failures",
+                            title=f"Auth Bypass — No Auth Required: {ep.method} {ep.url}",
+                            risk=ai_verdict.get("risk", "High"),
+                            confidence=ai_verdict.get("confidence", 75),
+                            url=ep.url, method=method,
+                            param="Authorization/Cookie",
+                            payload=f"Removed: {remove_headers or 'cookies'}",
+                            evidence=ev,
+                            response_raw=m_body[:900],
+                            exploit_cmd=(
+                                f"curl -X {method} '{url}'"
+                                + (" (no Authorization header)" if "authorization" in remove_headers
+                                   else " (no cookies)")
+                            ),
+                            remediation="Enforce authentication on every endpoint. Never trust missing auth.",
+                            confirmed=bool(ai_verdict.get("confirmed")),
+                        )
             # Unauthenticated access — 200 va meaningful response?
-            if m_status in (200, 201) and len(m_body) > 100:
+            if False and m_status in (200, 201) and len(m_body) > 100:
                 body_l = m_body.lower()
                 # Login page emas
                 login_sigs = sum(1 for s in ["password","login","sign in","signin"]
@@ -6646,8 +7491,30 @@ Return JSON with ALL relevant mutations:
                         )
 
         elif mut_type == "METHOD_SWITCH":
+            if m_status in (200, 201, 204) and b_status in (400, 403, 404, 405):
+                ctx = self._access_candidate_context(ep.url, baseline, url, resp)
+                ai_verdict = self._confirm_access_candidate("METHOD_SWITCH", url, method, baseline, resp, ctx)
+                if ai_verdict:
+                    finding = self._make_finding(
+                        owasp_id="A01",
+                        owasp_name="Broken Access Control",
+                        title=f"Method Switch Bypass ({method}): {ep.url}",
+                        risk=ai_verdict.get("risk", "Medium"),
+                        confidence=ai_verdict.get("confidence", 75),
+                        url=ep.url, method=method,
+                        param="HTTP Method",
+                        payload=method,
+                        evidence=(
+                            ai_verdict.get("evidence")
+                            or f"{ep.method}->{method}: status {b_status}->{m_status}, size {len(b_body)}->{len(m_body)}"
+                        ),
+                        response_raw=m_body[:700],
+                        exploit_cmd=f"curl -X {method} '{url}'",
+                        remediation="Restrict HTTP methods. Apply ACL per method.",
+                        confirmed=bool(ai_verdict.get("confirmed")),
+                    )
             # Yangi method-da 200 qaytdi va baseline 4xx edi?
-            if m_status in (200,201,204) and b_status in (400,403,404,405):
+            if False and m_status in (200,201,204) and b_status in (400,403,404,405):
                 finding = self._make_finding(
                     owasp_id="A01",
                     owasp_name="Broken Access Control",
@@ -6705,7 +7572,29 @@ Return JSON with ALL relevant mutations:
                         )
 
         elif mut_type == "PATH_ESCALATE":
-            if m_status in (200,201) and b_status in (401,403,404):
+            if m_status in (200, 201) and b_status in (401, 403, 404):
+                ctx = self._access_candidate_context(ep.url, baseline, url, resp)
+                ai_verdict = self._confirm_access_candidate("PATH_ESCALATE", url, method, baseline, resp, ctx)
+                if ai_verdict:
+                    finding = self._make_finding(
+                        owasp_id="A01",
+                        owasp_name="Broken Access Control",
+                        title=f"Path Escalation: {ep.url} → {url}",
+                        risk=ai_verdict.get("risk", "High"),
+                        confidence=ai_verdict.get("confidence", 75),
+                        url=ep.url, method=method,
+                        param="URL Path",
+                        payload=url,
+                        evidence=(
+                            ai_verdict.get("evidence")
+                            or f"Path change {ep.url}->{url}: status {b_status}->{m_status}"
+                        ),
+                        response_raw=m_body[:700],
+                        exploit_cmd=f"curl '{url}'",
+                        remediation="Apply authorization checks on all paths. Use allowlist.",
+                        confirmed=bool(ai_verdict.get("confirmed")),
+                    )
+            if False and m_status in (200,201) and b_status in (401,403,404):
                 body_l = m_body.lower()
                 login_sigs = sum(1 for s in ["password","login","sign in"] if s in body_l)
                 sens = RiskScorer.score_body(m_body)
@@ -6730,8 +7619,33 @@ Return JSON with ALL relevant mutations:
                     )
 
         elif mut_type == "HEADER_INJECT":
+            if m_status in (200, 201) and b_status in (401, 403):
+                ctx = self._access_candidate_context(ep.url, baseline, url, resp)
+                ai_verdict = self._confirm_access_candidate("HEADER_INJECT", url, method, baseline, resp, ctx)
+                if ai_verdict:
+                    added_h = changes.get("add_headers",{})
+                    h_name  = list(added_h.keys())[0] if added_h else "header"
+                    h_val   = list(added_h.values())[0] if added_h else ""
+                    finding = self._make_finding(
+                        owasp_id="A01",
+                        owasp_name="Broken Access Control",
+                        title=f"Header Injection Bypass ({h_name}): {ep.url}",
+                        risk=ai_verdict.get("risk", "High"),
+                        confidence=ai_verdict.get("confidence", 75),
+                        url=ep.url, method=method,
+                        param=f"header:{h_name}",
+                        payload=f"{h_name}: {h_val}",
+                        evidence=(
+                            ai_verdict.get("evidence")
+                            or f"Adding {h_name}: {h_val} changed status {b_status}->{m_status}"
+                        ),
+                        response_raw=m_body[:700],
+                        exploit_cmd=f"curl -H '{h_name}: {h_val}' '{url}'",
+                        remediation=f"Never use {h_name} for authorization decisions.",
+                        confirmed=bool(ai_verdict.get("confirmed")),
+                    )
             # Header qo'shish orqali ko'proq access oldimi?
-            if m_status in (200,201) and b_status in (401,403):
+            if False and m_status in (200,201) and b_status in (401,403):
                 body_l = m_body.lower()
                 login_sigs = sum(1 for s in ["password","login"] if s in body_l)
                 if login_sigs < 2 and len(m_body) > 100:
@@ -6817,64 +7731,54 @@ Return JSON:
     # ── Sensitive data leak check ─────────────────────────────────────────────
     def _check_sensitive_leak(self, ep: "Endpoint",
                                body: str, headers: dict) -> List["Finding"]:
-        """Response-da sensitive data bormi? Password, token, PII."""
-        findings = []
+        """Response-da real sensitive secrets bormi? Final verdict AI bilan tasdiqlanadi."""
         if not body or len(body) < 20:
             return []
 
-        leaks = []
+        response_profile = self._response_profile(ep.url, {
+            "status": 200,
+            "headers": headers,
+            "body": body,
+        })
+        candidates = RiskScorer.score_body(body, url=ep.url, headers=headers)
+        if not candidates:
+            return []
 
-        # Password/secret fields
-        for pat, label in [
-            (r'"password"\s*:\s*"([^"]{4,})"',        "cleartext password"),
-            (r'"passwd"\s*:\s*"([^"]{4,})"',           "cleartext password"),
-            (r'"secret"\s*:\s*"([a-zA-Z0-9+/=]{10,})"',"secret key"),
-            (r'"api_?key"\s*:\s*"([a-zA-Z0-9_\-]{16,})"', "API key"),
-            (r'"token"\s*:\s*"([a-zA-Z0-9._\-]{20,})"',   "token"),
-            (r'AKIA[0-9A-Z]{16}',                      "AWS access key"),
-            (r'"private_key"\s*:\s*"([^"]{20,})"',     "private key"),
-            (r'-----BEGIN [A-Z ]+PRIVATE KEY-----',    "PEM private key"),
-            (r'"ssn"\s*:\s*"(\d{3}-\d{2}-\d{4})"',    "SSN"),
-            (r'"credit_?card"\s*:\s*"(\d{13,19})"',    "credit card"),
-            (r'"cvv"\s*:\s*"(\d{3,4})"',               "CVV"),
-        ]:
-            m = re.search(pat, body, re.I)
-            if m:
-                val = m.group(1) if m.lastindex else m.group(0)
-                leaks.append({"label": label, "value": val[:40]})
+        strong_candidates = [c for c in candidates if c.get("strong")]
+        if self._response_is_publicish(response_profile) and not strong_candidates:
+            return []
 
-        # PII check
-        email_count = len(re.findall(
-            r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', body
-        ))
-        if email_count > 5:
-            leaks.append({"label": "mass email exposure", "value": f"{email_count} emails"})
+        verdict = self.ai.verify_sensitive_candidates(
+            url=ep.url,
+            headers=headers,
+            body=body,
+            response_profile=response_profile,
+            candidates=candidates,
+        )
+        if not verdict.get("is_sensitive") or verdict.get("confidence", 0) < max(MIN_CONFIDENCE, 70):
+            return []
 
-        if leaks:
-            evidence = ", ".join(f"{l['label']}: {l['value']}" for l in leaks[:4])
-            findings.append(self._make_finding(
-                owasp_id="A02",
-                owasp_name="Cryptographic Failures",
-                title=f"Sensitive Data Exposure in Response: {ep.url}",
-                risk="Critical" if any(
-                    l["label"] in ("cleartext password","PEM private key","AWS access key")
-                    for l in leaks
-                ) else "High",
-                confidence=90,
-                url=ep.url, method=ep.method,
-                param="response_body",
-                payload="",
-                evidence=evidence,
-                response_raw=body[:600],
-                exploit_cmd=f"curl -X {ep.method} '{ep.url}'",
-                remediation=(
-                    "Never return sensitive data in API responses. "
-                    "Mask passwords, encrypt keys, apply data minimization."
-                ),
-                confirmed=True,
-            ))
-
-        return findings
+        evidence = verdict.get("evidence") or ", ".join(
+            f"{c['label']}: {c['value']}" for c in candidates[:4]
+        )
+        return [self._make_finding(
+            owasp_id="A02",
+            owasp_name="Cryptographic Failures",
+            title=f"Sensitive Data Exposure in Response: {ep.url}",
+            risk=verdict.get("risk", "High"),
+            confidence=verdict.get("confidence", 75),
+            url=ep.url, method=ep.method,
+            param="response_body",
+            payload="",
+            evidence=evidence,
+            response_raw=body[:900],
+            exploit_cmd=f"curl -X {ep.method} '{ep.url}'",
+            remediation=(
+                "Never return sensitive data in API responses. "
+                "Mask secrets, move credentials server-side, and apply data minimization."
+            ),
+            confirmed=True,
+        )]
 
     # ── Cookie security ───────────────────────────────────────────────────────
     def _check_cookie_security(self, ep: "Endpoint",
@@ -8025,9 +8929,9 @@ class FPFilter:
         findings = self._dedup(findings)
         passed   = []
         for f in findings:
-            is_bac = f.owasp_id=="A01" and any(
+            is_bac = any(
                 k in (f.title+f.tool).lower()
-                for k in ["403","bypass","acl","forbidden","recursive"]
+                for k in ["403","bypass","acl","forbidden","recursive","no auth required"]
             )
             # Pre-verified confirmed BAC — pass through
             if is_bac and f.confirmed and f.tool in ("acl_bypass","recursive_403"):
@@ -8035,6 +8939,11 @@ class FPFilter:
 
             # Confirmed non-BAC — pass through (but still FP-filter borderline ones)
             if f.confirmed and not is_bac:
+                if self._quick_fp(f):
+                    f.fp_filtered = True
+                    if not f.suppression_reason:
+                        f.suppression_reason = "Quick filter: confirmed finding matches public/static/login response."
+                    continue
                 passed.append(f); continue
 
             if self._quick_fp(f):
@@ -8088,6 +8997,14 @@ class FPFilter:
         has_signal = bool((f.evidence or "").strip() or (f.tool_output or "").strip())
         if not f.baseline_diff and not has_signal: return True
         body = f.response_raw.lower()
+        profile = ResponseClassifier.classify(f.url, {}, f.response_raw, 200)
+        title_l = f.title.lower()
+        if profile.get("verdict") in {"static_asset", "public_page", "login_page"}:
+            if any(token in title_l for token in [
+                "auth bypass", "no auth required", "bypass", "sensitive data exposure"
+            ]):
+                f.suppression_reason = f"Response classified as {profile.get('verdict')}."
+                return True
         if any(k in body for k in ["access denied","blocked by","firewall","captcha"]) and \
            f.confidence < 70:
             f.suppression_reason = "Generic blocking page."
@@ -8988,13 +9905,45 @@ class PentestPipeline:
         page_cache   : dict = {}
         extra_endpoints: list = []
         total_pages = len(enriched)
+        ai_page_priority_urls: Set[str] = set()
+        if total_pages:
+            try:
+                prioritized_for_page = self.ai.plan_endpoints(enriched)
+            except Exception as e:
+                console.print(f"  [dim yellow]  page priority fallback (heuristic): {e}[/dim yellow]")
+                prioritized_for_page = sorted(enriched, key=lambda e: -e.score)
+            ai_page_budget = max(
+                PAGE_ANALYSIS_PRIORITY_MIN,
+                int(math.ceil(total_pages * PAGE_ANALYSIS_PRIORITY_RATIO)),
+            )
+            ai_page_budget = min(total_pages, ai_page_budget, PAGE_ANALYSIS_PRIORITY_MAX)
+            ai_page_priority_urls = {ep.url for ep in prioritized_for_page[:ai_page_budget]}
+            console.print(
+                f"  [dim]  AI page analysis scope: "
+                f"{len(ai_page_priority_urls)}/{total_pages} priority endpoint(s)[/dim]"
+            )
         for idx, ep in enumerate(enriched, start=1):
-            r = page_cache.setdefault(ep.url, self.client.get(ep.url))
+            r = page_cache.get(ep.url)
+            if r is None:
+                r = self.client.get(ep.url)
+                page_cache[ep.url] = r
             if r["status"] == 0:
                 if idx % PAGE_ANALYSIS_PROGRESS_EVERY == 0 or idx == total_pages:
                     console.print(f"  [dim]  analyzed {idx} of {total_pages}[/dim]")
                 continue
             is_200   = baseline.is_real_200(r)
+            if ep.url not in ai_page_priority_urls:
+                # Non-priority endpoints are still fetched/cached (for Source Code Review),
+                # but skip expensive per-page AI analysis here.
+                if is_200.get("real"):
+                    ep.score += 4
+                if r["status"] in (401, 403):
+                    ep.score += 10
+                if RiskScorer.score_body(r.get("body", "")):
+                    ep.score += 18
+                if idx % PAGE_ANALYSIS_PROGRESS_EVERY == 0 or idx == total_pages:
+                    console.print(f"  [dim]  analyzed {idx} of {total_pages}[/dim]")
+                continue
             try:
                 analysis = self.ai.analyze_page(ep.url, r["status"], r["body"], r["headers"], is_200)
             except Exception as e:
