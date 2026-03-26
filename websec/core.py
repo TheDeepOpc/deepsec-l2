@@ -8630,6 +8630,70 @@ class SourceCodeReviewer:
                 pass
         return compiled
 
+    @staticmethod
+    def _normalized_body_hash(body: str) -> str:
+        sample = str(body or "")[:12000]
+        sample = re.sub(r"https?://[^\s\"'<>]+", " URL ", sample, flags=re.I)
+        sample = re.sub(r"\s+", " ", sample).strip().lower()
+        return hashlib.md5(sample.encode("utf-8", errors="ignore")).hexdigest()
+
+    @staticmethod
+    def _is_example_config_path(path: str) -> bool:
+        path_l = str(path or "").lower()
+        return any(token in path_l for token in (".example", "example.", "/examples/", "sample", "demo"))
+
+    def _looks_like_real_config_body(self, path: str, body: str, headers: Optional[dict] = None) -> bool:
+        path_l = str(path or "").lower()
+        body = str(body or "")
+        body_s = body.strip()
+        if len(body_s) < 10:
+            return False
+        ct = ResponseClassifier.normalize_content_type(headers or {})
+        profile = ResponseClassifier.classify(path, headers or {}, body, 200)
+        if profile.get("verdict") in {"public_page", "login_page", "static_asset"}:
+            return False
+
+        body_l = body_s[:12000].lower()
+
+        if path_l.endswith("/dockerfile") or path_l.endswith("dockerfile"):
+            return any(marker in body_l for marker in ("\nfrom ", "from ", "\nrun ", "\ncopy ", "\nentrypoint", "\ncmd "))
+        if path_l.endswith("jenkinsfile"):
+            return any(marker in body_l for marker in ("pipeline {", "node {", "stage(", "agent any"))
+        if path_l.endswith("/.git/config"):
+            return any(marker in body_l for marker in ("[core]", "[remote ", "[branch "))
+        if path_l.endswith("/.npmrc"):
+            return bool(re.search(r"(?m)^(?:registry|always-auth|_authToken|//.+:_authToken)\s*=", body_s))
+        if path_l.endswith("/.pypirc"):
+            return any(marker in body_l for marker in ("[distutils]", "[pypi]", "[testpypi]"))
+        if path_l.endswith(".properties"):
+            return bool(re.search(r"(?m)^[A-Za-z0-9_.-]+\s*=\s*\S+", body_s))
+        if any(token in path_l for token in ("/.env", ".env.local", ".env.production", ".env.backup", ".env.example")):
+            return bool(re.search(r"(?m)^[A-Z][A-Z0-9_]{1,}\s*=\s*.+$", body_s))
+        if path_l.endswith(".php"):
+            return "<?php" in body_l and any(marker in body_l for marker in ("define(", "$", "return [", "array("))
+        if path_l.endswith("web.config"):
+            return body_l.startswith("<?xml") or "<configuration" in body_l or "<appsettings" in body_l
+        if path_l.endswith((".json", ".json5")) or "appsettings" in path_l or path_l.endswith("composer.json"):
+            try:
+                parsed = json.loads(body_s)
+            except Exception:
+                return False
+            return isinstance(parsed, (dict, list))
+        if path_l.endswith((".yaml", ".yml")):
+            yaml_markers = ("version:", "services:", "steps:", "jobs:", "stages:", "pipelines:", "build:")
+            if any(marker in body_l for marker in yaml_markers):
+                return True
+            return len(re.findall(r"(?m)^\s{0,4}[A-Za-z0-9_.-]+\s*:\s*.+$", body_s)) >= 2
+        if "xml" in ct:
+            return body_l.startswith("<?xml") or "<configuration" in body_l
+        if "json" in ct:
+            try:
+                parsed = json.loads(body_s)
+            except Exception:
+                return False
+            return isinstance(parsed, (dict, list))
+        return False
+
     def scan(self, endpoints: list, page_cache: dict, target: str) -> list:
         self._seen_values = set()
         self.console.print(f"  [dim]  {len(page_cache)} cached pages + JS files scanning...[/dim]")
@@ -8809,6 +8873,20 @@ Return JSON:
     def _probe_config_files(self, target: str) -> list:
         findings = []
         base = target.rstrip("/")
+        root_hash = ""
+        root_profile = {"verdict": "unknown"}
+        try:
+            root_response = self.client.get(base)
+            if root_response.get("status") == 200 and root_response.get("body"):
+                root_profile = ResponseClassifier.classify(
+                    base,
+                    root_response.get("headers", {}),
+                    root_response.get("body", ""),
+                    root_response.get("status", 0),
+                )
+                root_hash = self._normalized_body_hash(root_response.get("body", ""))
+        except Exception:
+            pass
         config_paths = [
             "/.env", "/.env.local", "/.env.production", "/.env.backup", "/.env.example",
             "/config.json", "/config.yaml", "/config.yml", "/appsettings.json", "/appsettings.Development.json",
@@ -8829,12 +8907,30 @@ Return JSON:
             body = response.get("body", "")
             if len(body) < 10:
                 continue
+            headers = response.get("headers", {})
+            profile = ResponseClassifier.classify(url, headers, body, response.get("status", 0))
+            body_hash = self._normalized_body_hash(body)
+            strong_sensitive = RiskScorer.has_strong_sensitive_candidate(
+                RiskScorer.score_body(body, url=url, headers=headers)
+            )
+            looks_config = self._looks_like_real_config_body(path, body, headers)
+            if not strong_sensitive:
+                if profile.get("verdict") in {"public_page", "login_page", "static_asset"}:
+                    continue
+                if root_hash and body_hash == root_hash and root_profile.get("verdict") in {"public_page", "login_page", "unknown"}:
+                    continue
+                if not looks_config:
+                    continue
+
             self.console.print(f"  [yellow]  📄 Config file exposed: {url}[/yellow]")
             new_findings, _, _ = self._scan_content(body, url, "text/plain")
             if new_findings:
                 findings.extend(new_findings)
                 continue
-            if any(sp in path for sp in [".env", "config.json", "appsettings", "secrets.yml", "credentials", "wp-config", "database.yml"]):
+            sensitive_config_path = any(
+                sp in path for sp in [".env", "config.json", "appsettings", "secrets.yml", "credentials", "wp-config", "database.yml"]
+            )
+            if sensitive_config_path and (looks_config or strong_sensitive) and not (self._is_example_config_path(path) and not strong_sensitive):
                 finding = self._make_finding(
                     title=f"Configuration File Exposed: {path}",
                     risk="High",
@@ -10412,8 +10508,8 @@ class PentestPipeline:
         )
         if src_findings:
             console.print(
-                f"  [bold red]  🔑 {len(src_findings)} secret(s) found "
-                f"in source code![/bold red]"
+                f"  [bold red]  🔎 {len(src_findings)} source/config finding(s) found "
+                f"during source review![/bold red]"
             )
 
         # ACL bypass findings from crawler
