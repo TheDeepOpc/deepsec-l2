@@ -2111,7 +2111,8 @@ class AIEngine:
         Send chat request to Ollama HTTP API with real timeout enforcement.
         """
         model = resolve_model_name(model_override or MODEL_NAME)
-        timeout = float(timeout_sec if timeout_sec and timeout_sec > 0 else AI_CALL_TIMEOUT_SEC)
+        # Remove timeout for AI chat request (wait indefinitely)
+        timeout = None
         chat_url = urllib.parse.urljoin(OLLAMA_HOST.rstrip("/") + "/", "api/chat")
         payload = {
             "model": model,
@@ -2127,8 +2128,12 @@ class AIEngine:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode("utf-8", errors="replace")
+            if timeout is not None:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+            else:
+                with urllib.request.urlopen(req) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
             err_body = ""
             try:
