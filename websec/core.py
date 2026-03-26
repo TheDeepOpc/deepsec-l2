@@ -2073,6 +2073,7 @@ class AIEngine:
 
     def __init__(self):
         self._cache:         dict = {}
+        self._dir_hit_verdict_cache: dict = {}
         self._sensitive_verdict_cache: dict = {}
         self._access_verdict_cache: dict = {}
         self._client              = None
@@ -2737,6 +2738,28 @@ Return JSON: {{
                          profile: "SmartFuzzProfile") -> dict:
         title_m = re.search(r'<title[^>]*>(.*?)</title>', body, re.I|re.S)
         title   = title_m.group(1).strip()[:60] if title_m else ""
+        norm_body = re.sub(r"\d{2,}", "#", (body or "").lower())
+        norm_body = re.sub(r"\s+", " ", norm_body).strip()
+        cache_material = {
+            "status": int(status or 0),
+            "size_bucket": int(size or 0) // 32,
+            "words_bucket": int(words or 0) // 5,
+            "lines_bucket": int(lines or 0) // 3,
+            "title": title.lower(),
+            "body_hash": hashlib.md5(norm_body[:1600].encode("utf-8", errors="replace")).hexdigest(),
+            "profile": {
+                "codes": sorted(profile.filter_codes or []),
+                "sizes": sorted(profile.filter_sizes or [])[:6],
+                "words": sorted(profile.filter_words or [])[:6],
+                "lines": sorted(profile.filter_lines or [])[:6],
+            },
+        }
+        cache_key = hashlib.md5(
+            json.dumps(cache_material, sort_keys=True).encode("utf-8", errors="replace")
+        ).hexdigest()
+        cached = self._dir_hit_verdict_cache.get(cache_key)
+        if cached is not None:
+            return copy.deepcopy(cached)
         prompt = f"""Fuzzer found URL. Is it a real sensitive finding?
 
 404 signature: fc={profile.filter_codes} fs={profile.filter_sizes} fw={profile.filter_words}
@@ -2757,8 +2780,10 @@ Return JSON: {{
   "reason": "explanation",
   "remediation": "how to fix"
 }}"""
-        result = self._call(prompt, cache=False)
-        if result: return result
+        result = self._call(prompt, cache=True)
+        if result:
+            self._dir_hit_verdict_cache[cache_key] = copy.deepcopy(result)
+            return result
         url_l  = url.lower()
         is_s   = any(k in url_l for k in [
             "admin","config","backup","secret",".env","db","debug","shell","passwd","key","api"
@@ -3101,7 +3126,7 @@ class ReconEngine:
         has_scheme = raw.startswith(("http://","https://"))
         if has_scheme:
             p = urllib.parse.urlparse(raw)
-            return (p.hostname or raw), (p.port or (443 if "https" in raw else 80)), \
+            return (p.hostname or raw), p.port, \
                    bool(re.match(r'^\d+\.\d+\.\d+\.\d+$', p.hostname or "")), True
         if ":" in raw and raw.count(":") == 1:
             h, _, pt = raw.rpartition(":")
@@ -3132,13 +3157,24 @@ class ReconEngine:
         if port_hint:
             cmd = (f"nmap -sV --version-intensity 4 -p {port_hint} "
                    f"--open -T4 --script=http-title,banner {host}")
-        else:
-            ports = ",".join(str(p) for p in self.WEB_PORTS)
-            cmd   = (f"nmap -sV --version-intensity 4 --top-ports 200 -p {ports} "
+            r = _run_cmd(cmd, timeout=120)
+            raw = r.get("output","")
+            return self._parse_nmap(raw), self._parse_os(raw), raw
+        top_cmd = (f"nmap -sV --version-intensity 4 --top-ports 200 "
+                   f"--open -T4 --script=http-title,banner {host}")
+        extra_ports = ",".join(str(p) for p in sorted(set(self.WEB_PORTS)))
+        extra_cmd = (f"nmap -sV --version-intensity 4 -p {extra_ports} "
                      f"--open -T4 --script=http-title,banner {host}")
-        r   = _run_cmd(cmd, timeout=120)
-        raw = r.get("output","")
-        return self._parse_nmap(raw), self._parse_os(raw), raw
+        top_raw = _run_cmd(top_cmd, timeout=120).get("output","")
+        extra_raw = _run_cmd(extra_cmd, timeout=90).get("output","")
+        merged_ports = self._merge_open_ports(
+            self._parse_nmap(top_raw) + self._parse_nmap(extra_raw)
+        )
+        os_guess = self._parse_os(top_raw)
+        if not os_guess or os_guess == "unknown":
+            os_guess = self._parse_os(extra_raw)
+        raw = "\n\n".join(x for x in [top_raw, extra_raw] if x)
+        return merged_ports, os_guess or "unknown", raw
 
     def _parse_nmap(self, out: str) -> list:
         ports, pat = [], re.compile(r'^(\d+)/tcp\s+open\s+(\S+)\s*(.*?)$', re.MULTILINE)
@@ -3153,6 +3189,24 @@ class ReconEngine:
             })
         return ports
 
+    def _merge_open_ports(self, ports: List[dict]) -> List[dict]:
+        merged: Dict[int, dict] = {}
+        for port_info in ports:
+            port = int(port_info.get("port", 0) or 0)
+            if not port:
+                continue
+            current = merged.get(port)
+            if not current:
+                merged[port] = dict(port_info)
+                continue
+            if current.get("service") in {"", "unknown"} and port_info.get("service"):
+                current["service"] = port_info["service"]
+            if len(str(port_info.get("version", ""))) > len(str(current.get("version", ""))):
+                current["version"] = port_info.get("version", "")
+            current["ssl"] = bool(current.get("ssl")) or bool(port_info.get("ssl"))
+            current["is_web"] = bool(current.get("is_web")) or bool(port_info.get("is_web"))
+        return [merged[p] for p in sorted(merged)]
+
     def _parse_os(self, out: str) -> str:
         m = re.search(r'OS details?:\s*(.+?)\n', out)
         if m: return m.group(1).strip()
@@ -3166,6 +3220,19 @@ class ReconEngine:
             url    = f"{scheme}://{host}:{port_hint}" if port_hint not in (80,443) \
                      else f"{scheme}://{host}"
             return [{"url":url.rstrip("/"), "port":port_hint, "ssl":scheme=="https","source":"input"}]
+        if has_scheme and not port_hint:
+            parsed = urllib.parse.urlparse(raw_input)
+            scheme = (parsed.scheme or "").lower()
+            default_port = 443 if scheme == "https" else 80
+            preferred_url = f"{scheme}://{host}" if scheme in ("http", "https") else ""
+            if preferred_url and self._alive(preferred_url):
+                targets.append({
+                    "url": preferred_url.rstrip("/"),
+                    "port": default_port,
+                    "ssl": scheme == "https",
+                    "source": "input",
+                })
+                checked.add(default_port)
         if port_hint:
             for scheme in ("http","https"):
                 url = f"{scheme}://{host}:{port_hint}"
@@ -3241,6 +3308,13 @@ class ReconEngine:
         if not HAS_RICH:
             print(f"  IP:{r.resolved_ip} WAF:{r.waf} Ports:{len(r.open_ports)}")
             return
+        port_entries = [
+            f"{p['port']}/{p.get('service','?')}{' [web]' if p.get('is_web') else ''}"
+            for p in sorted(r.open_ports, key=lambda x: x.get("port", 0))
+        ]
+        port_summary = ", ".join(port_entries[:10]) if port_entries else "-"
+        if len(port_entries) > 10:
+            port_summary += f" (+{len(port_entries) - 10} more)"
         t = Table(title=f"Recon: {r.target_input}", box=box.ROUNDED)
         t.add_column("Item", style="cyan", width=18)
         t.add_column("Value")
@@ -3248,6 +3322,7 @@ class ReconEngine:
         t.add_row("OS",           r.os_guess[:60] or "unknown")
         t.add_row("WAF",          r.waf)
         t.add_row("Open ports",   str(len(r.open_ports)))
+        t.add_row("Port details", port_summary)
         t.add_row("HTTP targets", str(len(r.http_targets)))
         t.add_row("Subdomains",   str(len(r.subdomains)))
         t.add_row("Tech",         ", ".join(list(r.tech_stack.keys())[:8]))
@@ -10433,7 +10508,9 @@ class PentestPipeline:
                     continue
                 raw_hits = result.get("results", [])
                 max_analyze = max(30, int(os.environ.get("DIR_FUZZ_MAX_ANALYZE", "120")))
-                per_signature_cap = max(1, int(os.environ.get("DIR_FUZZ_MAX_PER_SIGNATURE", "6")))
+                per_signature_cap = max(1, int(os.environ.get("DIR_FUZZ_MAX_PER_SIGNATURE", "4")))
+                per_template_cap = max(1, int(os.environ.get("DIR_FUZZ_MAX_PER_TEMPLATE", "2")))
+                per_body_cap = max(1, int(os.environ.get("DIR_FUZZ_MAX_PER_EXACT_BODY", "1")))
                 hits_to_analyze: List[dict] = []
                 fp_count: Dict[tuple, int] = {}
                 for hit in raw_hits:
@@ -10460,11 +10537,14 @@ class PentestPipeline:
                 processed = 0
                 skipped_default = 0
                 skipped_template = 0
+                skipped_body = 0
                 batch_started = time.time()
                 last_progress = batch_started
                 progress_every = max(25, min(200, max(1, len(hits_to_analyze) // 10)))
                 time_limit_hit = False
                 template_seen: Dict[tuple, int] = {}
+                exact_body_seen: Dict[tuple, int] = {}
+                exact_body_verdicts: Dict[tuple, dict] = {}
                 for hit in hits_to_analyze:
                     if (time.time() - scan_start) > global_max_time:
                         console.print(
@@ -10490,6 +10570,23 @@ class PentestPipeline:
 
                     r        = self.client.get(hit_url)
                     body     = r.get("body","")
+                    body_hash = hashlib.md5(body.encode("utf-8", errors="replace")).hexdigest()
+                    body_sig = (hit_st, body_hash)
+                    cached_body_verdict = exact_body_verdicts.get(body_sig)
+                    if cached_body_verdict is not None:
+                        if cached_body_verdict.get("is_directory") and depth < profile.depth:
+                            nd = hit_url.rstrip("/")
+                            if nd not in visited_dirs:
+                                queue_dirs.append(nd)
+                        skipped_body += 1
+                        processed += 1
+                        continue
+                    seen_body = exact_body_seen.get(body_sig, 0)
+                    if seen_body >= per_body_cap:
+                        skipped_body += 1
+                        processed += 1
+                        continue
+                    exact_body_seen[body_sig] = seen_body + 1
 
                     # Template dedupe: header/footer/navbar/content shell bir xil bo'lsa
                     # faqat bir necha representative URL AI orqali tahlil qilinadi.
@@ -10509,7 +10606,7 @@ class PentestPipeline:
                         tail,
                     )
                     seen = template_seen.get(tpl_sig, 0)
-                    if seen >= per_signature_cap:
+                    if seen >= per_template_cap:
                         skipped_template += 1
                         processed += 1
                         continue
@@ -10518,6 +10615,7 @@ class PentestPipeline:
                     verdict  = ai.analyze_dir_hit(
                         hit_url, hit_st, hit_size, hit_words, hit_lines, body, cur_p
                     )
+                    exact_body_verdicts[body_sig] = verdict
                     if verdict.get("is_sensitive") and verdict.get("confidence",0)>=MIN_CONFIDENCE:
                         c = verdict.get("risk","Info")
                         cl = {"Critical":"bold red","High":"red","Medium":"yellow","Low":"cyan"}.get(c,"dim")
@@ -10554,10 +10652,11 @@ class PentestPipeline:
                             f"(findings={len(level_findings)}, queue={len(queue_dirs)}, eta~{eta}s)[/dim]"
                         )
                         last_progress = now
-                if skipped_default or skipped_template:
+                if skipped_default or skipped_template or skipped_body:
                     console.print(
                         f"  [dim]  Dir fuzz skipped: default_like={skipped_default}, "
-                        f"template_duplicate={skipped_template}[/dim]"
+                        f"template_duplicate={skipped_template}, "
+                        f"exact_body_duplicate={skipped_body}[/dim]"
                     )
                 if time_limit_hit:
                     break
